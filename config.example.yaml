@@ -1,0 +1,44 @@
+# Agentic Dataset Generation Configuration
+
+# API Configuration
+api:
+  provider: "openrouter" # API provider (e.g., "openrouter")
+  base_url: "https://openrouter.ai/api/v1/chat/completions" # API endpoint
+  model: "anthropic/claude-3.5-sonnet" # Model to use for generation
+  api_key: "your-api-key-here" # Direct API key (fallback to OPENROUTER_API_KEY env var)
+  searxng_url: "https://searxng.gptbox.dev" # Custom SearXNG instance URL
+  timeout: 300 # Request timeout in seconds
+  max_retries: 3 # Number of retries for failed API calls
+
+# Prompts Configuration
+prompts:
+  source: "prompts.txt" # Path to prompts file (.txt, .jsonl, .json, or directory of .md files)
+  limit: null # Optional: limit number of prompts to process (null = all)
+  shuffle: false # Whether to shuffle prompts before processing
+
+# Workspace Configuration
+workspace:
+  base_dir: "sandbox" # Base directory for all workspaces
+  cleanup: true # Whether to delete workspace after successful processing
+  preserve_on_error: true # Keep workspace if processing fails
+
+# Agent Configuration
+agent:
+  max_turns: 50 # Maximum conversation turns per prompt
+  tools_enabled:
+    - read_file
+    - write_file
+    - edit_file
+    - list_directory
+    - search_code
+    - run_command
+    - web_search
+
+# Output Configuration
+output:
+  dataset_file: "datasets/agentic_dataset.jsonl" # Target JSONL file
+
+# Processing Configuration
+processing:
+  concurrency: 1 # Number of prompts to process concurrently
+  resume: true # Resume from existing dataset file

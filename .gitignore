@@ -1,0 +1,54 @@
+# Bytecode / Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Config / Secrets
+.env
+.flaskenv
+agentic_datagen/config.yaml
+agentic_datagen/config.test.yaml
+
+# Data & Workspaces
+datasets/agentic_*.jsonl
+agentic_workspaces/
+agentic_workspaces_test/
+
+# Logs
+*.log
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project Specific
+run_test.py
+test_tools.py
+validate_dataset.py
+TEST_REPORT.md
