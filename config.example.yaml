@@ -12,13 +12,13 @@ api:
 
 # Prompts Configuration
 prompts:
-  source: "prompts.txt" # Path to prompts file (.txt, .jsonl, .json, or directory of .md files)
+  source: "prompts.txt" # Path to prompts file relative to repo root
   limit: null # Optional: limit number of prompts to process (null = all)
   shuffle: false # Whether to shuffle prompts before processing
 
 # Workspace Configuration
 workspace:
-  base_dir: "sandbox" # Base directory for all workspaces
+  base_dir: "sandbox" # Directory for agent workspaces, relative to repo root
   cleanup: true # Whether to delete workspace after successful processing
   preserve_on_error: true # Keep workspace if processing fails
 
@@ -36,7 +36,7 @@ agent:
 
 # Output Configuration
 output:
-  dataset_file: "datasets/agentic_dataset.jsonl" # Target JSONL file
+  dataset_file: "datasets/agentic_dataset.jsonl" # Target dataset file relative to repo root
 
 # Processing Configuration
 processing:

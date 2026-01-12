@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 import yaml
 
-from .agent_session import AgentSession
-from .formatter import NemotronFormatter
+from agent_session import AgentSession
+from formatter import NemotronFormatter
 
 
 class AgenticDatasetGenerator:
@@ -97,7 +97,7 @@ class AgenticDatasetGenerator:
 
     def _load_prompts(self) -> List[str]:
         """Load prompts from configured source."""
-        from .utils import load_prompts
+        from utils import load_prompts
 
         prompts_config = self.config["prompts"]
         source_path = Path(prompts_config["source"])

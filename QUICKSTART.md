@@ -3,7 +3,6 @@
 ## 1. Install Dependencies
 
 ```bash
-cd agentic_datagen
 pip install -r requirements.txt
 ```
 
@@ -42,8 +41,7 @@ api:
 ## 4. Run Generation
 
 ```bash
-# From the TeichAI root directory
-python -m agentic_datagen.cli -c config.yaml
+python cli.py -c config.yaml
 ```
 
 ## 5. Live Monitoring
@@ -57,12 +55,13 @@ The CLI provides a live progress bar tracking:
 ## 6. Full Dataset Generation
 
 ```bash
-python -m agentic_datagen.cli -c my_config.yaml
+python cli.py -c config.yaml
 ```
 
 ## Common Configurations
 
 ### Process All Prompts
+
 ```yaml
 prompts:
   source: "combined.txt"
@@ -70,6 +69,7 @@ prompts:
 ```
 
 ### Use Different Model
+
 ```yaml
 api:
   model: "openai/gpt-4o"
@@ -80,12 +80,14 @@ api:
 ```
 
 ### Enable Concurrency
+
 ```yaml
 processing:
   concurrency: 5  # Process 5 prompts in parallel
 ```
 
 ### Clean Up Workspaces
+
 ```yaml
 workspace:
   cleanup: true  # Delete workspaces after success
@@ -93,6 +95,7 @@ workspace:
 ```
 
 ### Disable Resume
+
 ```yaml
 processing:
   resume: false  # Start from scratch
@@ -101,23 +104,28 @@ processing:
 ## Troubleshooting
 
 ### "Missing API key"
+
 - Ensure `OPENROUTER_API_KEY` is set in environment or `.env` file
 - Check the key is valid and has credits
 
 ### "Module not found"
-- Run from the TeichAI root directory
-- Ensure dependencies are installed: `pip install -r agentic_datagen/requirements.txt`
+
+- Ensure you are in the repository root
+- Ensure dependencies are installed: `pip install -r requirements.txt`
 
 ### "Permission denied"
+
 - Check file permissions on output directory
 - Ensure workspace directory is writable
 
 ### Tool Execution Fails
+
 - Check workspace is created correctly
 - Review logs for specific errors
 - Inspect preserved workspaces
 
 ### Validation Errors
+
 - Check the log file for details
 - Review the session data structure
 - Ensure tools return proper JSON
