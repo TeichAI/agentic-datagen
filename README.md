@@ -1,6 +1,6 @@
 # Agentic Dataset Generator
 
-A tool for creating agentic coding datasets with tool-calling capabilities, compatible with the Nvidia Nemotron-Agentic-v1 format.
+A tool for creating agentic coding datasets with tool-calling capabilities.
 
 ## Overview
 
@@ -10,8 +10,7 @@ This tool generates synthetic agentic datasets by:
 2. Creating isolated workspaces for each prompt
 3. Running an AI agent with Windsurf/Cursor/Codex-like capabilities (file operations, code search, etc.)
 4. Recording all reasoning, tool calls, and responses
-5. Formatting output to match Nemotron-Agentic-v1 structure
-6. Validating and appending to a JSONL dataset file
+5. Validating and appending to a JSONL dataset file
 
 ## Features
 
@@ -20,14 +19,13 @@ This tool generates synthetic agentic datasets by:
 - **Live Metrics & Progress**: Real-time CLI tracking of cost (USD), token count, and completion status via `tqdm`.
 - **Workspace Isolation**: Each prompt gets its own workspace directory (`sandbox/` by default).
 - **Session Recording**: Complete multi-turn trajectories including reasoning and tool outputs.
-- **Nemotron Format**: Native compatibility with Nvidia Nemotron-Agentic-v1 dataset structure.
 - **Resume Support**: Automatically skips already processed prompts.
 
 ## Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/agentic_datagen.git
+git clone https://github.com/TeichAI/agentic_datagen.git
 cd agentic_datagen
 
 # Install dependencies
@@ -104,7 +102,7 @@ The tool provides a live CLI progress bar using `tqdm`, tracking:
 2. Creating isolated workspaces for each prompt
 3. Running an AI agent with tool access
 4. Recording all reasoning, tool calls, and responses
-5. Formatting output to match Nemotron-Agentic-v1 structure
+5. Formatting output to match OpenAI structure
 6. Validating and appending to a JSONL dataset file
 7. Cleaning up workspaces (if configured)
 
@@ -116,7 +114,7 @@ The tool provides a live CLI progress bar using `tqdm`, tracking:
 ├── generator.py        # Main orchestrator
 ├── agent_session.py    # Session management
 ├── tools.py            # Tool registry and implementations
-├── formatter.py        # Nemotron format converter
+├── formatter.py        # OpenAI format converter
 ├── utils.py            # Prompt loading utilities
 ├── config.example.yaml # Example configuration
 └── README.md           # This file

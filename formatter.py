@@ -1,14 +1,14 @@
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 
-class NemotronFormatter:
-    """Format agentic sessions to Nemotron-Agentic-v1 compatible format."""
+class Formatter:
+    """Format agentic sessions to proper format."""
 
     @staticmethod
     def format_session(session_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Format a session into Nemotron-Agentic-v1 structure.
+        Format a session into proper structure.
 
         The format includes:
         - conversations: multi-turn dialogue with tool calls

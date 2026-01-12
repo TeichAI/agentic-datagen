@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Set
 import yaml
 
 from agent_session import AgentSession
-from formatter import NemotronFormatter
+from formatter import Formatter
 
 
 class AgenticDatasetGenerator:
@@ -17,7 +17,7 @@ class AgenticDatasetGenerator:
     def __init__(self, config_path: str):
         self.config = self._load_config(config_path)
         self.logger = self._setup_logging()
-        self.formatter = NemotronFormatter()
+        self.formatter = Formatter()
 
         self.api_key = self._get_api_key()
         self.config["api"]["api_key"] = self.api_key
@@ -27,6 +27,13 @@ class AgenticDatasetGenerator:
 
         self.output_file = Path(self.config["output"]["dataset_file"])
         self.output_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # Initialize global tool definitions if available
+        self.enabled_tools = self.config["agent"].get("tools_enabled", [])
+        from tools import ToolRegistry
+
+        temp_registry = ToolRegistry(Path("."), self.config)
+        self.tool_definitions = temp_registry.get_tool_definitions(self.enabled_tools)
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration from YAML file."""
@@ -178,6 +185,9 @@ class AgenticDatasetGenerator:
                 return None
 
             formatted_entry = self.formatter.format_session(session_data)
+
+            # Add tools column
+            formatted_entry["tools"] = self.tool_definitions
 
             # Hardcoded validation and format
             if not self.formatter.validate_entry(formatted_entry):

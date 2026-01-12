@@ -60,10 +60,8 @@ Create Session → Send Prompt → LLM Response → Tool Calls? → Execute Tool
 
 ### 4. Formatter (`formatter.py`)
 
-**Output formatter** for Nemotron-Agentic-v1 compatibility.
-
 **Responsibilities:**
-- Convert session data to Nemotron format
+- Convert session data to the proper format
 - Validate entry structure
 - Generate JSONL lines
 
@@ -126,7 +124,6 @@ Create Session → Send Prompt → LLM Response → Tool Calls? → Execute Tool
 │          v          │
 │  ┌───────────────┐  │
 │  │ Format        │  │
-│  │ (Nemotron)    │  │
 │  └───────┬───────┘  │
 │          │          │
 │          v          │
@@ -229,9 +226,10 @@ The system automatically monitors API usage:
 
 ## Format Reference
 
-The output is native **Nemotron-Agentic-v1** JSONL. Each entry includes:
+Each entry includes:
 
 - `messages`: Full multi-turn conversation.
+- `tools`: List of available tool definitions in OpenAI format.
 - `metadata`: Session stats and completion status.
 - `usage`: Token and cost breakdown for that specific trajectory.
 
@@ -309,7 +307,7 @@ def _call_llm(self, messages, enabled_tools):
 - Never logged in full
 - Support for .env files
 
-## Comparison to Nemotron-Agentic-v1
+## Comparison to nvidia/Nemotron-Agentic-v1
 
 **Similarities:**
 - Multi-turn conversations

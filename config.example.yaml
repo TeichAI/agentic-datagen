@@ -5,7 +5,7 @@ api:
   provider: "openrouter" # API provider (e.g., "openrouter")
   base_url: "https://openrouter.ai/api/v1/chat/completions" # API endpoint
   model: "anthropic/claude-3.5-sonnet" # Model to use for generation
-  api_key: "your-api-key-here" # Direct API key (fallback to OPENROUTER_API_KEY env var)
+  api_key: "your-api-key-here" # API key (can also be set via OPENROUTER_API_KEY env var)
   searxng_url: "https://searxng.gptbox.dev" # Custom SearXNG instance URL
   timeout: 300 # Request timeout in seconds
   max_retries: 3 # Number of retries for failed API calls
