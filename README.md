@@ -130,7 +130,7 @@ This tool is designed to be extensible:
 
 ## License
 
-Same as parent TeichAI project.
+[Apache 2.0](https://github.com/TeichAI/agentic-datagen/blob/main/LICENSE)
 
 ---
 
