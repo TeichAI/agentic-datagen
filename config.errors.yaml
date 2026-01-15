@@ -1,0 +1,37 @@
+api:
+  provider: "openrouter"
+  base_url: "https://openrouter.ai/api/v1/chat/completions"
+  model: "google/gemini-3-flash-preview"
+  api_key: "your-api-key-here"
+  api_key_env: "OPENROUTER_API_KEY"
+  searxng_url: "https://searxng.gptbox.dev"
+
+prompts:
+  source: "datasets/dataset_errors.jsonl" # Read prompts from the previous error dataset
+  limit: 0 # 0/null = all
+  shuffle: false
+
+workspace:
+  base_dir: "sandbox"
+  cleanup: false
+  preserve_on_error: true
+
+agent:
+  max_turns: 20
+  tools_enabled:
+    - read_file
+    - write_file
+    - edit_file
+    - list_directory
+    - search_code
+    - run_command
+    - web_search
+
+output:
+  dataset_file: "datasets/dataset.jsonl" # Append successful retries here
+  error_dataset_file: "datasets/dataset_errors_retry.jsonl" # Write remaining errors here
+  append_mode: true
+
+processing:
+  concurrency: 10
+  resume: false

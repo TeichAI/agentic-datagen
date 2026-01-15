@@ -20,6 +20,7 @@ This tool generates synthetic agentic datasets by:
 - **Workspace Isolation**: Each prompt gets its own workspace directory (`sandbox/` by default).
 - **Session Recording**: Complete multi-turn trajectories including reasoning and tool outputs.
 - **Resume Support**: Automatically skips already processed prompts.
+- **Error Capture & Retry**: Optionally route failed sessions to a dedicated JSONL file for retries.
 
 ## Installation
 
@@ -44,7 +45,7 @@ python cli.py -c config.yaml
 
 ## Configuration
 
-The tool uses a simple YAML configuration file. See `config.example.yaml` for a template.
+The tool uses a simple YAML configuration file. See `config.example.yaml` for a template, and `config.errors.yaml` for an error-retry template.
 
 ### Minimal Configuration
 
@@ -55,7 +56,7 @@ api:
   searxng_url: "https://searxng.gptbox.dev"
 
 prompts:
-  source: "prompts.txt"
+  source: "prompts.txt" # .txt, .jsonl, or .json
 
 workspace:
   base_dir: "sandbox"
@@ -69,6 +70,11 @@ agent:
 
 output:
   dataset_file: "datasets/agentic_dataset.jsonl"
+  error_dataset_file: "datasets/agentic_dataset_errors.jsonl"
+
+processing:
+  concurrency: 10
+  resume: true
 ```
 
 ## Usage
@@ -105,6 +111,37 @@ The tool provides a live CLI progress bar using `tqdm`, tracking:
 5. Formatting output to match OpenAI structure
 6. Validating and appending to a JSONL dataset file
 7. Cleaning up workspaces (if configured)
+
+## Error Handling & Retry Workflow
+
+The generator can write failed sessions to a dedicated JSONL file so you can retry them later without mixing with successful entries.
+
+### Initial run with error capture
+
+```yaml
+output:
+  dataset_file: datasets/agentic_dataset.jsonl
+  error_dataset_file: datasets/agentic_dataset_errors.jsonl
+processing:
+  resume: false
+```
+
+### Retry only failed prompts
+
+Use the previous **error dataset** as the prompt source, and write new failures to a **different** error file. This prevents the retry from appending back into the same file you are reading.
+
+```yaml
+output:
+  dataset_file: datasets/agentic_dataset.jsonl
+  error_dataset_file: datasets/agentic_dataset_errors_retry.jsonl
+prompts:
+  source: datasets/agentic_dataset_errors.jsonl
+  limit: 0
+processing:
+  resume: false
+```
+
+When the retry succeeds, entries are appended to `dataset_file`. Any remaining failures go to `error_dataset_file`.
 
 ## Architecture
 

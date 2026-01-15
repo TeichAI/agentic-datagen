@@ -16,6 +16,7 @@ class Formatter:
         """
         conversation = session_data.get("conversation", [])
         tool_calls = session_data.get("tool_calls", [])
+        usage = session_data.get("usage", {})
 
         formatted_messages = []
 
@@ -42,7 +43,9 @@ class Formatter:
                 "turns": session_data.get("turns"),
                 "completed": session_data.get("completed", False),
                 "tool_calls_count": len(tool_calls),
+                "error": session_data.get("error"),
             },
+            "usage": usage,
         }
 
     @staticmethod

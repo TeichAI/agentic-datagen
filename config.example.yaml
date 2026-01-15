@@ -6,14 +6,13 @@ api:
   base_url: "https://openrouter.ai/api/v1/chat/completions" # API endpoint
   model: "anthropic/claude-3.5-sonnet" # Model to use for generation
   api_key: "your-api-key-here" # API key (can also be set via OPENROUTER_API_KEY env var)
+  api_key_env: "OPENROUTER_API_KEY" # Optional: override the env var name
   searxng_url: "https://searxng.gptbox.dev" # Custom SearXNG instance URL
-  timeout: 300 # Request timeout in seconds
-  max_retries: 3 # Number of retries for failed API calls
 
 # Prompts Configuration
 prompts:
   source: "prompts.txt" # Path to prompts file relative to repo root
-  limit: null # Optional: limit number of prompts to process (null = all)
+  limit: null # Optional: limit number of prompts to process (null/0 = all)
   shuffle: false # Whether to shuffle prompts before processing
 
 # Workspace Configuration
@@ -37,6 +36,8 @@ agent:
 # Output Configuration
 output:
   dataset_file: "datasets/agentic_dataset.jsonl" # Target dataset file relative to repo root
+  error_dataset_file: "datasets/agentic_dataset_errors.jsonl" # Optional: failed sessions only
+  append_mode: true # Append to dataset (false = overwrite)
 
 # Processing Configuration
 processing:

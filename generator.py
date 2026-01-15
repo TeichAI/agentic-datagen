@@ -28,6 +28,12 @@ class AgenticDatasetGenerator:
         self.output_file = Path(self.config["output"]["dataset_file"])
         self.output_file.parent.mkdir(parents=True, exist_ok=True)
 
+        error_output_path = self.config.get("output", {}).get("error_dataset_file")
+        self.error_output_file = None
+        if error_output_path:
+            self.error_output_file = Path(error_output_path)
+            self.error_output_file.parent.mkdir(parents=True, exist_ok=True)
+
         # Initialize global tool definitions if available
         self.enabled_tools = self.config["agent"].get("tools_enabled", [])
         from tools import ToolRegistry
@@ -176,13 +182,13 @@ class AgenticDatasetGenerator:
             session_data = session.run()
             session.close()
 
-            if "error" in session_data:
+            is_error = "error" in session_data
+            if is_error:
                 self.logger.error(f"Session error: {session_data['error']}")
                 if self.config["workspace"].get("preserve_on_error", True):
                     self.logger.info(f"Preserving workspace: {workspace_dir}")
                 else:
                     self._cleanup_workspace(workspace_dir)
-                return None
 
             formatted_entry = self.formatter.format_session(session_data)
 
@@ -194,7 +200,7 @@ class AgenticDatasetGenerator:
                 self.logger.error("Entry validation failed")
                 return None
 
-            if self.config["workspace"].get("cleanup", True):
+            if self.config["workspace"].get("cleanup", True) and not is_error:
                 self._cleanup_workspace(workspace_dir)
             else:
                 self.logger.info(f"Preserving workspace: {workspace_dir}")
@@ -216,6 +222,15 @@ class AgenticDatasetGenerator:
         # Default to append mode
         mode = "a" if self.config.get("output", {}).get("append_mode", True) else "w"
         with self.output_file.open(mode, encoding="utf-8") as f:
+            f.write(jsonl_line + "\n")
+
+    def _append_to_error_dataset(self, entry: Dict[str, Any]):
+        """Append entry to error dataset file."""
+        if not self.error_output_file:
+            return
+
+        jsonl_line = self.formatter.to_jsonl_line(entry)
+        with self.error_output_file.open("a", encoding="utf-8") as f:
             f.write(jsonl_line + "\n")
 
     def generate(self):
@@ -267,7 +282,13 @@ class AgenticDatasetGenerator:
                 entry = self._process_prompt(prompt, index)
 
                 if entry:
-                    self._append_to_dataset(entry)
+                    if (
+                        entry.get("metadata", {}).get("error")
+                        and self.error_output_file
+                    ):
+                        self._append_to_error_dataset(entry)
+                    else:
+                        self._append_to_dataset(entry)
                     update_pbar(entry)
                 else:
                     pbar.update(1)
@@ -287,7 +308,13 @@ class AgenticDatasetGenerator:
                     try:
                         entry = future.result()
                         if entry:
-                            self._append_to_dataset(entry)
+                            if (
+                                entry.get("metadata", {}).get("error")
+                                and self.error_output_file
+                            ):
+                                self._append_to_error_dataset(entry)
+                            else:
+                                self._append_to_dataset(entry)
                         update_pbar(entry)
                     except Exception as e:
                         self.logger.error(f"Error in future: {e}")

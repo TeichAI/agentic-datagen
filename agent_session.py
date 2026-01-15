@@ -26,7 +26,7 @@ class AgentSession:
         self.agent_config = agent_config
         self.session_id = session_id
 
-        self.tool_registry = ToolRegistry(workspace_dir, config=api_config)
+        self.tool_registry = ToolRegistry(workspace_dir, config={"api": api_config})
         self.conversation_history: List[Dict[str, Any]] = []
         self.tool_calls_log: List[Dict[str, Any]] = []
 
@@ -76,24 +76,23 @@ class AgentSession:
             try:
                 response = self._call_llm(messages, enabled_tools)
 
-                # Extract usage and cost if available (OpenRouter format)
-                usage = response.get("usage", {})
-                prompt_tokens = usage.get("prompt_tokens", 0)
-                completion_tokens = usage.get("completion_tokens", 0)
-
+                prompt_tokens, completion_tokens, turn_cost = self._extract_usage(
+                    response
+                )
                 total_prompt_tokens += prompt_tokens
                 total_completion_tokens += completion_tokens
-
-                # OpenRouter provides direct cost in the response occasionally,
-                # or we can try to find it in the response JSON
-                turn_cost = response.get("cost", 0.0)
                 total_cost += turn_cost
 
             except Exception as e:
                 return {
+                    "session_id": self.session_id,
+                    "prompt": self.prompt,
                     "error": f"LLM call failed: {str(e)}",
                     "turns": turn_count,
                     "conversation": messages,
+                    "tool_calls": self.tool_calls_log,
+                    "final_response": None,
+                    "completed": False,
                     "usage": {
                         "prompt_tokens": total_prompt_tokens,
                         "completion_tokens": total_completion_tokens,
@@ -196,7 +195,53 @@ class AgentSession:
                 f"API error {response.status_code}: {response.text[:500]}"
             )
 
-        return response.json()
+        payload = response.json()
+        payload["_headers"] = dict(response.headers)
+        return payload
+
+    def _extract_usage(self, response: Dict[str, Any]) -> tuple[int, int, float]:
+        usage = response.get("usage") or {}
+        prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+        completion_tokens = (
+            usage.get("completion_tokens") or usage.get("output_tokens") or 0
+        )
+
+        cost_candidates = (
+            response.get("cost"),
+            response.get("total_cost"),
+            usage.get("cost"),
+            usage.get("total_cost"),
+            usage.get("total_price"),
+        )
+        turn_cost = next(
+            (float(value) for value in cost_candidates if value is not None), 0.0
+        )
+
+        headers = response.get("_headers") or {}
+        if (prompt_tokens == 0 and completion_tokens == 0) or turn_cost == 0.0:
+            header_usage = headers.get("x-openrouter-usage")
+            if header_usage:
+                try:
+                    parsed = json.loads(header_usage)
+                    prompt_tokens = prompt_tokens or parsed.get("prompt_tokens", 0)
+                    completion_tokens = completion_tokens or parsed.get(
+                        "completion_tokens", 0
+                    )
+                    if turn_cost == 0.0:
+                        turn_cost = parsed.get("cost", 0.0) or parsed.get(
+                            "total_cost", 0.0
+                        )
+                except (TypeError, ValueError):
+                    pass
+
+            header_cost = headers.get("x-openrouter-cost")
+            if header_cost and turn_cost == 0.0:
+                try:
+                    turn_cost = float(header_cost)
+                except ValueError:
+                    pass
+
+        return int(prompt_tokens), int(completion_tokens), float(turn_cost)
 
     def close(self):
         """Clean up resources."""
