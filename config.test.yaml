@@ -9,7 +9,7 @@ agent:
   - run_command
   - web_search
 api:
-  api_key: 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
+  api_key: your-api-key-here
   base_url: https://openrouter.ai/api/v1/chat/completions
   model: google/gemini-3-flash-preview
   provider: openrouter
