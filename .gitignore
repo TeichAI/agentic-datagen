@@ -35,6 +35,7 @@ agentic_datagen/config.test.yaml
 
 # Data & Workspaces
 datasets/agentic_*.jsonl
+sandbox/
 agentic_workspaces/
 agentic_workspaces_test/
 

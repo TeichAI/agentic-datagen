@@ -44,7 +44,7 @@ def _extract_prompts_from_json_record(record: Any) -> List[str]:
                 if content:
                     prompts.append(content)
 
-        for key in ("prompt", "input", "question", "task"):
+        for key in ("prompt", "input", "question", "task", "query"):
             if key in record:
                 content = _stringify_content(record[key])
                 if content:
