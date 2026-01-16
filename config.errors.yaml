@@ -4,6 +4,7 @@ api:
   model: "google/gemini-3-flash-preview"
   api_key: "your-api-key-here"
   api_key_env: "OPENROUTER_API_KEY"
+  reasoning_effort: "medium" # Optional: OpenRouter reasoning effort (e.g., low|medium|high)
   searxng_url: "https://searxng.gptbox.dev"
 
 prompts:

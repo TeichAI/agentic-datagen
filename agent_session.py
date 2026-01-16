@@ -169,6 +169,7 @@ class AgentSession:
         base_url = self.api_config.get("base_url")
         model = self.api_config.get("model")
         timeout = self.api_config.get("timeout", 120)
+        reasoning_effort = self.api_config.get("reasoning_effort")
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -179,6 +180,9 @@ class AgentSession:
             "model": model,
             "messages": messages,
         }
+
+        if reasoning_effort:
+            body["reasoning"] = {"effort": reasoning_effort}
 
         if enabled_tools:
             tool_definitions = self.tool_registry.get_tool_definitions(enabled_tools)

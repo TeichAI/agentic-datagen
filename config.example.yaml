@@ -7,6 +7,7 @@ api:
   model: "anthropic/claude-3.5-sonnet" # Model to use for generation
   api_key: "your-api-key-here" # API key (can also be set via OPENROUTER_API_KEY env var)
   api_key_env: "OPENROUTER_API_KEY" # Optional: override the env var name
+  reasoning_effort: "medium" # Optional: OpenRouter reasoning effort (e.g., low|medium|high)
   searxng_url: "https://searxng.gptbox.dev" # Custom SearXNG instance URL
 
 # Prompts Configuration
