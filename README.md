@@ -21,6 +21,7 @@ This tool generates synthetic agentic datasets by:
 - **Session Recording**: Complete multi-turn trajectories including reasoning and tool outputs.
 - **Resume Support**: Automatically skips already processed prompts.
 - **Error Capture & Retry**: Optionally route failed sessions to a dedicated JSONL file for retries.
+- **Flexible Prompt Sources**: Accepts `.txt`, `.json`, and `.jsonl` sources (including `query` fields).
 
 ## Installation
 
@@ -76,6 +77,38 @@ processing:
   concurrency: 10
   resume: true
 ```
+
+### API Options
+
+```yaml
+api:
+  provider: "openrouter" # Provider name (optional)
+  base_url: "https://openrouter.ai/api/v1/chat/completions" # Override API endpoint
+  api_key_env: "OPENROUTER_API_KEY" # Read API key from env instead of api_key
+  reasoning_effort: "medium" # Optional: OpenRouter reasoning effort (low|medium|high)
+  timeout: 120 # Request timeout in seconds
+```
+
+### Prompt Sources
+
+Supported formats: `.txt`, `.json`, `.jsonl`.
+
+- **Text**: each line is a prompt.
+- **JSON/JSONL**: each object can use one of these keys: `prompt`, `input`, `question`, `task`, `query`.
+
+### Output Files
+
+```yaml
+output:
+  dataset_file: "datasets/agentic_dataset.jsonl"
+  error_dataset_file: "datasets/agentic_dataset_errors.jsonl" # Optional
+  append_mode: true
+```
+
+- `dataset_file` stores successful sessions.
+- `error_dataset_file` (optional) stores failed sessions with `metadata.error` and full `usage` so you can retry later.
+- Set `error_dataset_file` to `null`/omit it if you don’t want a separate error file.
+- When retrying, **never** write errors back into the same file you’re using as the prompt source.
 
 ## Usage
 
