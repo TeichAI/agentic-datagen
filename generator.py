@@ -28,6 +28,11 @@ class AgenticDatasetGenerator:
         self.output_file = Path(self.config["output"]["dataset_file"])
         self.output_file.parent.mkdir(parents=True, exist_ok=True)
 
+        # Handle overwrite mode initialization
+        if not self.config.get("output", {}).get("append_mode", True):
+            if self.output_file.exists():
+                self.output_file.unlink()
+
         error_output_path = self.config.get("output", {}).get("error_dataset_file")
         self.error_output_file = None
         if error_output_path:
@@ -219,9 +224,8 @@ class AgenticDatasetGenerator:
         """Append entry to dataset file."""
         jsonl_line = self.formatter.to_jsonl_line(entry)
 
-        # Default to append mode
-        mode = "a" if self.config.get("output", {}).get("append_mode", True) else "w"
-        with self.output_file.open(mode, encoding="utf-8") as f:
+        # Always append, because we handled truncation in __init__
+        with self.output_file.open("a", encoding="utf-8") as f:
             f.write(jsonl_line + "\n")
 
     def _append_to_error_dataset(self, entry: Dict[str, Any]):
@@ -344,6 +348,9 @@ def main():
         generator = AgenticDatasetGenerator(args.config)
         generator.generate()
     except Exception as e:
+        import traceback
+
+        traceback.print_exc()
         print(f"Fatal error: {e}", file=sys.stderr)
         sys.exit(1)
 

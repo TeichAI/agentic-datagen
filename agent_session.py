@@ -106,6 +106,33 @@ class AgentSession:
             if not assistant_message:
                 break
 
+            # Extract reasoning/thought if present (Google Gemini / OpenRouter format)
+            reasoning_content = ""
+            reasoning_details = assistant_message.get("reasoning_details", [])
+
+            # Handle list-based reasoning details (Gemini style)
+            if isinstance(reasoning_details, list):
+                for detail in reasoning_details:
+                    if (
+                        isinstance(detail, dict)
+                        and detail.get("type") == "reasoning.text"
+                    ):
+                        reasoning_content += detail.get("text", "")
+            # Handle direct string reasoning (some other providers)
+            elif isinstance(reasoning_details, str):
+                reasoning_content = reasoning_details
+
+            # Also check for 'reasoning' field (DeepSeek style sometimes)
+            if not reasoning_content and "reasoning" in assistant_message:
+                reasoning_content = assistant_message["reasoning"]
+
+            # Prepend reasoning to content with <think> tags
+            if reasoning_content:
+                original_content = assistant_message.get("content") or ""
+                assistant_message["content"] = (
+                    f"<think>{reasoning_content}</think>\n{original_content}"
+                )
+
             messages.append(assistant_message)
 
             tool_calls = assistant_message.get("tool_calls", [])

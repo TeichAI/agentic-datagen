@@ -26,12 +26,10 @@ venv/
 .venv/
 pip-log.txt
 pip-delete-this-directory.txt
-
+unsloth_compiled_cache/
 # Config / Secrets
 .env
 .flaskenv
-agentic_datagen/config.yaml
-agentic_datagen/config.test.yaml
 
 # Data & Workspaces
 datasets/agentic_*.jsonl
@@ -53,3 +51,6 @@ run_test.py
 test_tools.py
 validate_dataset.py
 TEST_REPORT.md
+config.yaml
+prompts/*
+datasets/*
