@@ -133,7 +133,16 @@ class AgentSession:
                     f"<think>{reasoning_content}</think>\n{original_content}"
                 )
 
-            messages.append(assistant_message)
+            # Sanitize message before appending to history
+            # Remove provider-specific fields that might cause 400 errors on next turn
+            clean_message = {
+                "role": assistant_message.get("role", "assistant"),
+                "content": assistant_message.get("content"),
+            }
+            if "tool_calls" in assistant_message:
+                clean_message["tool_calls"] = assistant_message["tool_calls"]
+
+            messages.append(clean_message)
 
             tool_calls = assistant_message.get("tool_calls", [])
 

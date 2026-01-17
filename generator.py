@@ -286,13 +286,16 @@ class AgenticDatasetGenerator:
                 entry = self._process_prompt(prompt, index)
 
                 if entry:
-                    if (
-                        entry.get("metadata", {}).get("error")
-                        and self.error_output_file
-                    ):
+                    is_error = entry.get("metadata", {}).get("error")
+                    turns = entry.get("metadata", {}).get("turns", 0)
+
+                    # If it's an error but we have decent content (>= 2 turns), save to main dataset
+                    # Otherwise, if it's a hard fail at the start, save to error file
+                    if is_error and turns < 2 and self.error_output_file:
                         self._append_to_error_dataset(entry)
                     else:
                         self._append_to_dataset(entry)
+
                     update_pbar(entry)
                 else:
                     pbar.update(1)
@@ -312,14 +315,15 @@ class AgenticDatasetGenerator:
                     try:
                         entry = future.result()
                         if entry:
-                            if (
-                                entry.get("metadata", {}).get("error")
-                                and self.error_output_file
-                            ):
+                            is_error = entry.get("metadata", {}).get("error")
+                            turns = entry.get("metadata", {}).get("turns", 0)
+
+                            # If it's an error but we have decent content (>= 2 turns), save to main dataset
+                            if is_error and turns < 2 and self.error_output_file:
                                 self._append_to_error_dataset(entry)
                             else:
                                 self._append_to_dataset(entry)
-                        update_pbar(entry)
+                            update_pbar(entry)
                     except Exception as e:
                         self.logger.error(f"Error in future: {e}")
                         pbar.update(1)
