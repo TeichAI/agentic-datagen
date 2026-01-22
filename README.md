@@ -54,7 +54,7 @@ The tool uses a simple YAML configuration file. See `config.example.yaml` for a 
 api:
   model: "anthropic/claude-3.5-sonnet"
   api_key: "your-api-key"
-  searxng_url: "https://searxng.gptbox.dev"
+  searxng_url: "http://localhost:your-searxng-port"
 
 prompts:
   source: "prompts.txt" # .txt, .jsonl, or .json
