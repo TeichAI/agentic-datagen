@@ -313,7 +313,7 @@ class ToolRegistry:
         # Use SEARXNG_URL from config if available, otherwise environment or default
         searxng_url = self.config.get("api", {}).get("searxng_url")
         if not searxng_url:
-            searxng_url = os.getenv("SEARXNG_URL", "https://searxng.gptbox.dev")
+            searxng_url = os.getenv("SEARXNG_URL", "http://localhost:your-searxng-port")
 
         try:
             response = requests.get(
