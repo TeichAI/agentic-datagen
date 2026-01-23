@@ -36,10 +36,10 @@ class Formatter:
             formatted_messages.append(formatted_msg)
 
         return {
+            "prompt": session_data.get("prompt"),
             "messages": formatted_messages,
             "metadata": {
                 "session_id": session_data.get("session_id"),
-                "prompt": session_data.get("prompt"),
                 "turns": session_data.get("turns"),
                 "completed": session_data.get("completed", False),
                 "tool_calls_count": len(tool_calls),

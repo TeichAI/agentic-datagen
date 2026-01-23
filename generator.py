@@ -148,8 +148,7 @@ class AgenticDatasetGenerator:
 
                 try:
                     entry = json.loads(line)
-                    metadata = entry.get("metadata", {})
-                    prompt = metadata.get("prompt")
+                    prompt = entry.get("prompt")
                     if prompt:
                         completed.add(prompt.strip())
                 except json.JSONDecodeError:
@@ -199,6 +198,15 @@ class AgenticDatasetGenerator:
 
             # Add tools column
             formatted_entry["tools"] = self.tool_definitions
+
+            # Reorder columns for output readability
+            formatted_entry = {
+                "prompt": formatted_entry.get("prompt"),
+                "tools": formatted_entry.get("tools"),
+                "messages": formatted_entry.get("messages"),
+                "metadata": formatted_entry.get("metadata"),
+                "usage": formatted_entry.get("usage"),
+            }
 
             # Hardcoded validation and format
             if not self.formatter.validate_entry(formatted_entry):
