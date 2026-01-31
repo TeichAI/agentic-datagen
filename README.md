@@ -21,7 +21,7 @@ This tool generates synthetic agentic datasets by:
 - **Session Recording**: Complete multi-turn trajectories including reasoning and tool outputs.
 - **Resume Support**: Automatically skips already processed prompts.
 - **Error Capture & Retry**: Optionally route failed sessions to a dedicated JSONL file for retries.
-- **Flexible Prompt Sources**: Accepts `.txt`, `.json`, and `.jsonl` sources (including `query` fields).
+- **Flexible Prompt Sources**: Accepts `.txt`, `.json`, and `.jsonl` sources.
 
 ## Installation
 
@@ -200,7 +200,7 @@ This tool is designed to be extensible:
 
 ## License
 
-[Apache 2.0](https://github.com/TeichAI/agentic-datagen/blob/main/LICENSE)
+[MIT](https://github.com/TeichAI/agentic-datagen/blob/main/LICENSE)
 
 ---
 
