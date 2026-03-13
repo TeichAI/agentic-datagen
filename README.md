@@ -15,11 +15,13 @@ This tool generates synthetic agentic datasets by:
 ## Features
 
 - **Windsurf/Cursor/Codex-like Tools**: File operations (read, write, edit), directory listing, code search, command execution.
+- **Extensible Tool Registry**: Built-in tools, custom Python tools, and MCP-backed HTTP tools can all be enabled from config.
 - **Web Search**: Live integration with SearXNG instances.
 - **Live Metrics & Progress**: Real-time CLI tracking of cost (USD), token count, and completion status via `tqdm`.
 - **Workspace Isolation**: Each prompt gets its own workspace directory (`sandbox/` by default).
 - **Session Recording**: Complete multi-turn trajectories including reasoning and tool outputs.
 - **Resume Support**: Automatically skips already processed prompts.
+- **Run Manifest**: Per-prompt manifest with status, attempts, workspace path, usage, and output routing.
 - **Error Capture & Retry**: Optionally route failed sessions to a dedicated JSONL file for retries.
 - **Flexible Prompt Sources**: Accepts `.txt`, `.json`, and `.jsonl` sources.
 
@@ -86,6 +88,9 @@ api:
   base_url: "https://openrouter.ai/api/v1/chat/completions" # Override API endpoint
   api_key_env: "OPENROUTER_API_KEY" # Read API key from env instead of api_key
   reasoning_effort: "medium" # Optional: OpenRouter reasoning effort (low|medium|high)
+  max_retries: 5 # Retries for retryable transport/provider failures
+  backoff_base_seconds: 2.0 # Exponential backoff base delay
+  backoff_max_seconds: 60.0 # Maximum retry delay
   timeout: 120 # Request timeout in seconds
 ```
 
@@ -102,13 +107,25 @@ Supported formats: `.txt`, `.json`, `.jsonl`.
 output:
   dataset_file: "datasets/agentic_dataset.jsonl"
   error_dataset_file: "datasets/agentic_dataset_errors.jsonl" # Optional
+  run_manifest_file: "datasets/agentic_dataset.manifest.json" # Optional
   append_mode: true
 ```
 
 - `dataset_file` stores successful sessions.
 - `error_dataset_file` (optional) stores failed sessions with `metadata.error` and full `usage` so you can retry later.
+- `run_manifest_file` stores one record per prompt with status, attempts, route, and usage metadata.
 - Set `error_dataset_file` to `null`/omit it if you don’t want a separate error file.
 - When retrying, **never** write errors back into the same file you’re using as the prompt source.
+
+### Agent Prompting
+
+If `agent.system_prompt` is omitted, the generator uses a short default prompt tuned for code-editing trajectories:
+
+```text
+You are a coding agent. Use tools deliberately, inspect before editing, and finish the user's request with working files inside the workspace. When Context7 documentation tools are available and you are working with libraries or frameworks, use Context7 to fetch the latest relevant docs before making library-specific changes.
+```
+
+You can override it in config when you want a stricter or domain-specific behavior.
 
 ## Usage
 
@@ -126,6 +143,98 @@ python cli.py -c config.yaml
 - **search_code**: Search for patterns in files
 - **run_command**: Execute shell commands (with timeout)
 - **web_search**: Search the web using SearXNG
+
+## Custom Tool Quickstart
+
+The runtime now supports three tool sources:
+
+- **Built-in tools** defined by the generator.
+- **Custom Python tools** loaded from modules listed in `tools.custom_python_modules`.
+- **MCP HTTP tools** discovered from configured MCP servers.
+
+### Add a custom Python tool
+
+1. Create a Python module, for example `custom_tools/example_tools.py`.
+2. Export either:
+   - `TOOLS`: a list of tool spec dictionaries, or
+   - `register_tools(registry)`: a function that returns tool specs or registers them directly.
+3. Add the module path to `tools.custom_python_modules`.
+4. Add the tool name to `agent.tools_enabled`.
+
+Each tool spec must contain:
+
+- `name`
+- `description`
+- `parameters` (JSON Schema object)
+- `handler` (callable)
+
+Example:
+
+```python
+from typing import Any, Dict
+
+
+def workspace_snapshot(limit: int = 20, context: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    context = context or {}
+    workspace_dir = context["workspace_dir"]
+    items = sorted(workspace_dir.iterdir())[:limit]
+    return {"items": [item.name for item in items]}
+
+
+TOOLS = [
+    {
+        "name": "workspace_snapshot",
+        "description": "Return a compact snapshot of files in the workspace.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of files to include.",
+                    "default": 20,
+                }
+            },
+            "required": [],
+        },
+        "handler": workspace_snapshot,
+    }
+]
+```
+
+The registry automatically injects these optional handler kwargs when present in the function signature:
+
+- `context`
+- `workspace_dir`
+- `config`
+- `registry`
+
+### Enable MCP HTTP tools
+
+The generator supports MCP tool discovery and invocation over JSON-RPC HTTP transport.
+
+```yaml
+tools:
+  strict_mcp: false
+  mcp_servers:
+    context7:
+      transport: "http"
+      url: "https://mcp.context7.com/mcp"
+      timeout: 30
+      tool_name_prefix: "context7"
+      headers:
+        CONTEXT7_API_KEY: "YOUR_API_KEY"
+
+agent:
+  tools_enabled:
+    - context7:*
+```
+
+Notes:
+
+- Remote MCP tools are exposed locally as either `mcp__<server>__<tool>` or `<tool_name_prefix>__<tool>`.
+- A selector like `context7:*` enables every discovered tool from that MCP server, which is convenient for Context7.
+- When `tools.strict_mcp` is `false`, unreachable MCP servers are skipped instead of failing the whole run.
+- Current support targets MCP JSON-RPC over HTTP.
 
 ## Live Metrics & Progress
 
@@ -183,7 +292,10 @@ When the retry succeeds, entries are appended to `dataset_file`. Any remaining f
 ├── cli.py              # CLI entry point
 ├── generator.py        # Main orchestrator
 ├── agent_session.py    # Session management
-├── tools.py            # Tool registry and implementations
+├── tool_registry.py    # Extensible tool registry for built-ins, Python tools, and MCP tools
+├── tools.py            # Compatibility import wrapper for ToolRegistry
+├── run_manifest.py     # Per-prompt status and attempt tracking
+├── custom_tools/       # Example custom tool modules
 ├── formatter.py        # OpenAI format converter
 ├── utils.py            # Prompt loading utilities
 ├── config.example.yaml # Example configuration
@@ -194,7 +306,9 @@ When the retry succeeds, entries are appended to `dataset_file`. Any remaining f
 
 This tool is designed to be extensible:
 
-- Add new tools in `tools.py`
+- Add new built-ins in `tool_registry.py`
+- Add pluggable Python tools under `custom_tools/`
+- Connect MCP HTTP servers through `config.yaml`
 - Modify formatting in `formatter.py`
 - Extend session logic in `agent_session.py`
 
@@ -204,4 +318,4 @@ This tool is designed to be extensible:
 
 ---
 
-*This tool was created by TeichAI*
+This tool was created by TeichAI.

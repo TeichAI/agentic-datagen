@@ -39,19 +39,26 @@ class Formatter:
             "prompt": session_data.get("prompt"),
             "messages": formatted_messages,
             "metadata": {
+                "prompt_id": session_data.get("prompt_id"),
+                "run_id": session_data.get("run_id"),
                 "session_id": session_data.get("session_id"),
                 "turns": session_data.get("turns"),
                 "completed": session_data.get("completed", False),
                 "tool_calls_count": len(tool_calls),
                 "error": session_data.get("error"),
+                "retryable": session_data.get("retryable", False),
             },
             "usage": usage,
         }
 
     @staticmethod
-    def validate_entry(entry: Dict[str, Any]) -> bool:
+    def validate_entry(entry: Dict[str, Any], require_completion: bool = False) -> bool:
         """Validate that an entry has the required structure."""
         if not isinstance(entry, dict):
+            return False
+
+        prompt = entry.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
             return False
 
         if "messages" not in entry:
@@ -61,10 +68,48 @@ class Formatter:
         if not isinstance(messages, list) or len(messages) == 0:
             return False
 
+        metadata = entry.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            return False
+
+        allowed_roles = {"system", "user", "assistant", "tool"}
+        has_user = False
+        has_assistant = False
+
         for msg in messages:
             if not isinstance(msg, dict):
                 return False
-            if "role" not in msg:
+            role = msg.get("role")
+            if role not in allowed_roles:
+                return False
+
+            if role == "user":
+                has_user = True
+
+            if role == "assistant":
+                has_assistant = True
+                if "tool_calls" in msg and not isinstance(msg["tool_calls"], list):
+                    return False
+
+            if role == "tool":
+                if not msg.get("tool_call_id") or not msg.get("name"):
+                    return False
+
+        if not has_user:
+            return False
+
+        if require_completion:
+            if not has_assistant:
+                return False
+            if metadata.get("error"):
+                return False
+            if metadata.get("completed") is not True:
+                return False
+            last_message = messages[-1]
+            if last_message.get("role") != "assistant":
+                return False
+            last_content = last_message.get("content")
+            if not isinstance(last_content, str) or not last_content.strip():
                 return False
 
         return True

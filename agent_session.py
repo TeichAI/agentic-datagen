@@ -1,4 +1,5 @@
 import json
+import random
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -19,16 +20,26 @@ class AgentSession:
         api_config: Dict[str, Any],
         agent_config: Dict[str, Any],
         session_id: str,
+        prompt_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        runtime_config: Optional[Dict[str, Any]] = None,
     ):
         self.prompt = prompt
         self.workspace_dir = workspace_dir
         self.api_config = api_config
         self.agent_config = agent_config
         self.session_id = session_id
+        self.prompt_id = prompt_id
+        self.run_id = run_id
+        self.runtime_config = runtime_config or {
+            "api": api_config,
+            "agent": agent_config,
+        }
 
-        self.tool_registry = ToolRegistry(workspace_dir, config={"api": api_config})
+        self.tool_registry = ToolRegistry(workspace_dir, config=self.runtime_config)
         self.conversation_history: List[Dict[str, Any]] = []
         self.tool_calls_log: List[Dict[str, Any]] = []
+        self.state_file = self.workspace_dir / "session_state.json"
 
         self.http_session = self._create_http_session()
 
@@ -36,9 +47,9 @@ class AgentSession:
         """Create HTTP session with retry logic."""
         session = requests.Session()
         retries = Retry(
-            total=self.api_config.get("max_retries", 3),
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
+            total=0,
+            backoff_factor=0,
+            status_forcelist=[],
             allowed_methods=["POST"],
         )
         adapter = HTTPAdapter(max_retries=retries)
@@ -46,29 +57,155 @@ class AgentSession:
         session.mount("http://", adapter)
         return session
 
+    def _load_session_state(self) -> Optional[Dict[str, Any]]:
+        if not self.state_file.exists():
+            return None
+
+        try:
+            with self.state_file.open("r", encoding="utf-8") as f:
+                state = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+
+        if state.get("prompt") != self.prompt:
+            return None
+
+        return state
+
+    def _save_session_state(self, session_data: Dict[str, Any]) -> None:
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        with self.state_file.open("w", encoding="utf-8") as f:
+            json.dump(session_data, f, ensure_ascii=False)
+
+    def _build_session_payload(
+        self,
+        turn_count: int,
+        messages: List[Dict[str, Any]],
+        total_prompt_tokens: int,
+        total_completion_tokens: int,
+        total_cost: float,
+        final_response: Optional[str],
+        completed: bool,
+        error: Optional[str] = None,
+        retryable: bool = False,
+    ) -> Dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "prompt_id": self.prompt_id,
+            "run_id": self.run_id,
+            "prompt": self.prompt,
+            "turns": turn_count,
+            "conversation": messages,
+            "tool_calls": self.tool_calls_log,
+            "final_response": final_response,
+            "completed": completed,
+            "error": error,
+            "retryable": retryable,
+            "usage": {
+                "prompt_tokens": total_prompt_tokens,
+                "completion_tokens": total_completion_tokens,
+                "total_tokens": total_prompt_tokens + total_completion_tokens,
+                "cost": total_cost,
+            },
+        }
+
+    def _is_retryable_error(self, message: str) -> bool:
+        lowered = message.lower()
+        retryable_tokens = [
+            "429",
+            "rate limit",
+            "temporarily unavailable",
+            "timeout",
+            "timed out",
+            "connection reset",
+            "connection aborted",
+            "connection error",
+            "service unavailable",
+            "bad gateway",
+            "gateway",
+            "overloaded",
+            "try again",
+            "server error",
+            "invalid json",
+            "empty response",
+            "malformed",
+        ]
+        return any(token in lowered for token in retryable_tokens)
+
+    def _get_retry_delay(
+        self, attempt: int, response: Optional[requests.Response] = None
+    ) -> float:
+        retry_after = None
+        if response is not None:
+            retry_after = response.headers.get("Retry-After")
+
+        if retry_after:
+            try:
+                return max(0.0, float(retry_after))
+            except ValueError:
+                pass
+
+        backoff_base = float(self.api_config.get("backoff_base_seconds", 2.0))
+        backoff_max = float(self.api_config.get("backoff_max_seconds", 60.0))
+        delay = min(backoff_max, backoff_base * (2 ** max(0, attempt - 1)))
+        jitter = random.uniform(0, min(1.0, delay / 4 if delay else 0.25))
+        return delay + jitter
+
     def run(self) -> Dict[str, Any]:
         """Run the agentic session and return the complete trajectory."""
         system_prompt = self.agent_config.get("system_prompt")
         if not system_prompt:
             system_prompt = (
-                "You are a helpful coding assistant with access to file operations and code analysis tools.\n"
-                "Complete the user's task thoroughly and efficiently.\n"
-                "When given a coding task, create working code files in the workspace."
+                "You are a coding agent. Use tools deliberately, inspect before editing, "
+                "and finish the user's request with working files inside the workspace. "
+                "When Context7 documentation tools are available and you are working with "
+                "libraries or frameworks, use Context7 to fetch the latest relevant docs "
+                "before making library-specific changes."
             )
 
         max_turns = self.agent_config.get("max_turns") or 50
         enabled_tools = self.agent_config.get("tools_enabled", [])
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": self.prompt},
-        ]
-
-        turn_count = 0
-        final_response = None
-        total_prompt_tokens = 0
-        total_completion_tokens = 0
-        total_cost = 0.0
+        state = self._load_session_state()
+        if state:
+            if state.get("completed") and not state.get("error"):
+                return state
+            messages = state.get("conversation") or []
+            if not isinstance(messages, list) or not messages:
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": self.prompt},
+                ]
+            saved_tool_calls = state.get("tool_calls")
+            if isinstance(saved_tool_calls, list):
+                self.tool_calls_log = saved_tool_calls
+            usage = state.get("usage") or {}
+            turn_count = int(state.get("turns") or 0)
+            final_response = state.get("final_response")
+            total_prompt_tokens = int(usage.get("prompt_tokens") or 0)
+            total_completion_tokens = int(usage.get("completion_tokens") or 0)
+            total_cost = float(usage.get("cost") or 0.0)
+        else:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": self.prompt},
+            ]
+            turn_count = 0
+            final_response = None
+            total_prompt_tokens = 0
+            total_completion_tokens = 0
+            total_cost = 0.0
+            self._save_session_state(
+                self._build_session_payload(
+                    turn_count=turn_count,
+                    messages=messages,
+                    total_prompt_tokens=total_prompt_tokens,
+                    total_completion_tokens=total_completion_tokens,
+                    total_cost=total_cost,
+                    final_response=final_response,
+                    completed=False,
+                )
+            )
 
         while turn_count < max_turns:
             turn_count += 1
@@ -84,27 +221,36 @@ class AgentSession:
                 total_cost += turn_cost
 
             except Exception as e:
-                return {
-                    "session_id": self.session_id,
-                    "prompt": self.prompt,
-                    "error": f"LLM call failed: {str(e)}",
-                    "turns": turn_count,
-                    "conversation": messages,
-                    "tool_calls": self.tool_calls_log,
-                    "final_response": None,
-                    "completed": False,
-                    "usage": {
-                        "prompt_tokens": total_prompt_tokens,
-                        "completion_tokens": total_completion_tokens,
-                        "total_tokens": total_prompt_tokens + total_completion_tokens,
-                        "cost": total_cost,
-                    },
-                }
+                session_data = self._build_session_payload(
+                    turn_count=turn_count,
+                    messages=messages,
+                    total_prompt_tokens=total_prompt_tokens,
+                    total_completion_tokens=total_completion_tokens,
+                    total_cost=total_cost,
+                    final_response=None,
+                    completed=False,
+                    error=f"LLM call failed: {str(e)}",
+                    retryable=self._is_retryable_error(str(e)),
+                )
+                self._save_session_state(session_data)
+                return session_data
 
             assistant_message = response.get("choices", [{}])[0].get("message", {})
 
             if not assistant_message:
-                break
+                session_data = self._build_session_payload(
+                    turn_count=turn_count,
+                    messages=messages,
+                    total_prompt_tokens=total_prompt_tokens,
+                    total_completion_tokens=total_completion_tokens,
+                    total_cost=total_cost,
+                    final_response=None,
+                    completed=False,
+                    error="LLM call failed: empty response message",
+                    retryable=True,
+                )
+                self._save_session_state(session_data)
+                return session_data
 
             # Extract reasoning/thought if present (Google Gemini / OpenRouter format)
             reasoning_content = ""
@@ -148,7 +294,20 @@ class AgentSession:
 
             if not tool_calls:
                 final_response = assistant_message.get("content", "")
-                break
+                completed = bool(final_response and final_response.strip())
+                session_data = self._build_session_payload(
+                    turn_count=turn_count,
+                    messages=messages,
+                    total_prompt_tokens=total_prompt_tokens,
+                    total_completion_tokens=total_completion_tokens,
+                    total_cost=total_cost,
+                    final_response=final_response,
+                    completed=completed,
+                    error=None if completed else "LLM call failed: empty final response",
+                    retryable=not completed,
+                )
+                self._save_session_state(session_data)
+                return session_data
 
             for tool_call in tool_calls:
                 tool_name = tool_call.get("function", {}).get("name")
@@ -181,21 +340,31 @@ class AgentSession:
                     }
                 )
 
-        return {
-            "session_id": self.session_id,
-            "prompt": self.prompt,
-            "turns": turn_count,
-            "conversation": messages,
-            "tool_calls": self.tool_calls_log,
-            "final_response": final_response,
-            "completed": final_response is not None,
-            "usage": {
-                "prompt_tokens": total_prompt_tokens,
-                "completion_tokens": total_completion_tokens,
-                "total_tokens": total_prompt_tokens + total_completion_tokens,
-                "cost": total_cost,
-            },
-        }
+            self._save_session_state(
+                self._build_session_payload(
+                    turn_count=turn_count,
+                    messages=messages,
+                    total_prompt_tokens=total_prompt_tokens,
+                    total_completion_tokens=total_completion_tokens,
+                    total_cost=total_cost,
+                    final_response=final_response,
+                    completed=False,
+                )
+            )
+
+        session_data = self._build_session_payload(
+            turn_count=turn_count,
+            messages=messages,
+            total_prompt_tokens=total_prompt_tokens,
+            total_completion_tokens=total_completion_tokens,
+            total_cost=total_cost,
+            final_response=final_response,
+            completed=False,
+            error="LLM call failed: max turns exceeded",
+            retryable=True,
+        )
+        self._save_session_state(session_data)
+        return session_data
 
     def _call_llm(
         self, messages: List[Dict[str, Any]], enabled_tools: List[str]
@@ -226,18 +395,56 @@ class AgentSession:
                 body["tools"] = tool_definitions
                 body["tool_choice"] = "auto"
 
-        response = self.http_session.post(
-            base_url, headers=headers, json=body, timeout=timeout
-        )
+        max_attempts = max(1, int(self.api_config.get("max_retries", 3)) + 1)
+        retryable_statuses = {408, 409, 425, 429, 500, 502, 503, 504}
+        last_error = None
 
-        if response.status_code != 200:
-            raise RuntimeError(
-                f"API error {response.status_code}: {response.text[:500]}"
-            )
+        for attempt in range(1, max_attempts + 1):
+            response = None
+            try:
+                response = self.http_session.post(
+                    base_url, headers=headers, json=body, timeout=timeout
+                )
+            except requests.RequestException as exc:
+                last_error = f"request error: {str(exc)}"
+                if attempt >= max_attempts:
+                    break
+                time.sleep(self._get_retry_delay(attempt))
+                continue
 
-        payload = response.json()
-        payload["_headers"] = dict(response.headers)
-        return payload
+            if response.status_code == 200:
+                try:
+                    payload = response.json()
+                except ValueError as exc:
+                    last_error = f"invalid json response: {str(exc)}"
+                    if attempt >= max_attempts:
+                        break
+                    time.sleep(self._get_retry_delay(attempt, response))
+                    continue
+
+                choices = payload.get("choices")
+                if not isinstance(choices, list) or not choices:
+                    last_error = "empty response choices"
+                    if attempt >= max_attempts:
+                        break
+                    time.sleep(self._get_retry_delay(attempt, response))
+                    continue
+
+                payload["_headers"] = dict(response.headers)
+                return payload
+
+            error_text = response.text[:500]
+            last_error = f"API error {response.status_code}: {error_text}"
+            if (
+                response.status_code in retryable_statuses
+                or self._is_retryable_error(error_text)
+            ) and attempt < max_attempts:
+                time.sleep(self._get_retry_delay(attempt, response))
+                continue
+
+            break
+
+        raise RuntimeError(last_error or "unknown LLM API failure")
 
     def _extract_usage(self, response: Dict[str, Any]) -> tuple[int, int, float]:
         usage = response.get("usage") or {}

@@ -2,6 +2,8 @@ import json
 import argparse
 from pathlib import Path
 
+from formatter import Formatter
+
 
 def rescue_errors(error_file: str, output_file: str, min_turns: int = 1):
     """
@@ -18,6 +20,7 @@ def rescue_errors(error_file: str, output_file: str, min_turns: int = 1):
     print(f"Reading from {error_path}...")
 
     rescued_count = 0
+    formatter = Formatter()
 
     with open(error_path, "r", encoding="utf-8") as fin, open(
         output_path, "a", encoding="utf-8"
@@ -31,20 +34,12 @@ def rescue_errors(error_file: str, output_file: str, min_turns: int = 1):
             try:
                 entry = json.loads(line)
 
-                # Check metadata
                 metadata = entry.get("metadata", {})
                 turns = metadata.get("turns", 0)
 
-                # Basic validation: must have messages
-                if not entry.get("messages"):
-                    continue
-
-                # If it has enough turns, we keep it
-                if turns >= min_turns:
-                    # Optional: Remove the error flag or mark it as rescued
-                    # metadata['rescued_from_error'] = True
-                    # entry['metadata'] = metadata
-
+                if turns >= min_turns and formatter.validate_entry(
+                    entry, require_completion=True
+                ):
                     fout.write(json.dumps(entry, ensure_ascii=False) + "\n")
                     rescued_count += 1
 

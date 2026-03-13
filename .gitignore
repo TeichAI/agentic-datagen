@@ -54,3 +54,5 @@ TEST_REPORT.md
 config.yaml
 prompts/*
 datasets/*
+backups/
+logs/

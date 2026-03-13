@@ -5,8 +5,10 @@ import requests
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from tool_registry import ToolRegistry as ExtensibleToolRegistry
 
-class ToolRegistry:
+
+class LegacyToolRegistry:
     """Registry of available tools for the agentic system."""
 
     def __init__(self, workspace_dir: Path, config: Optional[Dict[str, Any]] = None):
@@ -339,3 +341,6 @@ class ToolRegistry:
             return "\n".join(results)
         except Exception as e:
             return f"Error performing web search: {str(e)}"
+
+
+ToolRegistry = ExtensibleToolRegistry

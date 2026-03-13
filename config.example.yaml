@@ -8,6 +8,10 @@ api:
   api_key: "your-api-key-here" # API key (can also be set via OPENROUTER_API_KEY env var)
   api_key_env: "OPENROUTER_API_KEY" # Optional: override the env var name
   reasoning_effort: "medium" # Optional: OpenRouter reasoning effort (e.g., low|medium|high)
+  max_retries: 5 # Retries for retryable transport/provider failures
+  backoff_base_seconds: 2.0 # Exponential backoff base delay
+  backoff_max_seconds: 60.0 # Maximum retry delay
+  timeout: 120 # Request timeout in seconds
   searxng_url: "http://localhost:your-searxng-port" # Custom SearXNG instance URL
 
 # Prompts Configuration
@@ -25,6 +29,7 @@ workspace:
 # Agent Configuration
 agent:
   max_turns: 50 # Maximum conversation turns per prompt
+  system_prompt: null # Optional: override the default prompt, which uses Context7 for current library/framework docs when available
   tools_enabled:
     - read_file
     - write_file
@@ -33,11 +38,27 @@ agent:
     - search_code
     - run_command
     - web_search
+    - workspace_snapshot
+    - context7:*
+
+tools:
+  custom_python_modules:
+    - custom_tools.example_tools
+  strict_mcp: false
+  mcp_servers:
+    context7:
+      transport: "http"
+      url: "https://mcp.context7.com/mcp"
+      timeout: 30
+      tool_name_prefix: "context7"
+      headers:
+        CONTEXT7_API_KEY: "YOUR_API_KEY"
 
 # Output Configuration
 output:
   dataset_file: "datasets/agentic_dataset.jsonl" # Target dataset file relative to repo root
   error_dataset_file: "datasets/agentic_dataset_errors.jsonl" # Optional: failed sessions only
+  run_manifest_file: "datasets/agentic_dataset.manifest.json" # Per-prompt status, attempts, and routing info
   append_mode: true # Append to dataset (false = overwrite)
 
 # Processing Configuration
