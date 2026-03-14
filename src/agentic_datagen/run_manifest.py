@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Mapping, Optional, Set
 
 
 class RunManifest:
@@ -65,26 +66,66 @@ class RunManifest:
         normalized = " ".join(prompt.strip().split())
         return normalized[:limit]
 
-    def seed_prompts(self, prompts: List[str], completed_prompts: Set[str]) -> None:
+    def seed_prompts(
+        self,
+        prompts: List[str],
+        completed_prompts: Set[str],
+        completed_prompt_counts: Optional[Mapping[str, int]] = None,
+    ) -> None:
         with self._lock:
             entries = self._data.setdefault("entries", {})
+            remaining_prompt_counts = Counter(completed_prompt_counts or {})
             for index, prompt in enumerate(prompts):
                 prompt_id = self.make_prompt_id(index, prompt)
                 entry = entries.get(prompt_id, {})
                 prompt_hash = self.make_prompt_hash(prompt)
+                normalized_prompt = prompt.strip()
                 entry.setdefault("prompt_id", prompt_id)
                 entry.setdefault("index", index)
                 entry.setdefault("prompt_hash", prompt_hash)
                 entry.setdefault("prompt_preview", self._entry_preview(prompt))
                 entry.setdefault("attempt_count", 0)
                 entry.setdefault("workspace_dir", None)
-                if prompt.strip() in completed_prompts:
+
+                is_completed = False
+                if prompt_id in completed_prompts:
+                    is_completed = True
+                elif remaining_prompt_counts.get(normalized_prompt, 0) > 0:
+                    is_completed = True
+                elif normalized_prompt in completed_prompts:
+                    is_completed = True
+
+                if is_completed and remaining_prompt_counts.get(normalized_prompt, 0) > 0:
+                    remaining_prompt_counts[normalized_prompt] -= 1
+
+                # If prompt is in the clean dataset, mark as completed
+                if is_completed:
                     entry["status"] = "completed"
                     entry["completed"] = True
+                    entry["retryable"] = False
+                    entry["last_error"] = None
                     entry.setdefault("dataset_route", "dataset")
                 else:
-                    entry.setdefault("status", "pending")
-                    entry.setdefault("completed", False)
+                    # Reset any previously "completed" entry that's no longer in dataset
+                    if entry.get("completed") is True or entry.get("status") == "completed":
+                        entry["status"] = "pending"
+                        entry["completed"] = False
+                        entry["retryable"] = True
+                        entry["last_error"] = "Removed from dataset; queued for retry"
+                        entry["dataset_route"] = None
+                    # Auto-retry: reset retryable_error entries to pending
+                    elif entry.get("status") == "retryable_error":
+                        entry["status"] = "pending"
+                        entry["completed"] = False
+                        entry["retryable"] = True
+                    # Auto-retry: reset fatal_error entries to pending (user can resume)
+                    elif entry.get("status") == "fatal_error":
+                        entry["status"] = "pending"
+                        entry["completed"] = False
+                        entry["retryable"] = True
+                    else:
+                        entry.setdefault("status", "pending")
+                        entry.setdefault("completed", False)
                 entries[prompt_id] = entry
             self._recompute_summary()
             self._persist_locked()

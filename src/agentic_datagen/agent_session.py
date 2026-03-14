@@ -7,7 +7,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from tools import ToolRegistry
+from .tools import ToolRegistry
 
 
 class AgentSession:
@@ -492,4 +492,5 @@ class AgentSession:
 
     def close(self):
         """Clean up resources."""
+        self.tool_registry.close()
         self.http_session.close()

@@ -82,13 +82,11 @@ def _load_markdown_prompts(directory: Path) -> List[str]:
 
 def _load_text_prompts(path: Path) -> List[str]:
     prompts: List[str] = []
-    seen: set[str] = set()
     with path.open("r", encoding="utf-8") as fh:
         for raw_line in fh:
             normalized = raw_line.strip()
-            if not normalized or normalized in seen:
+            if not normalized:
                 continue
-            seen.add(normalized)
             prompts.append(normalized)
     return prompts
 
@@ -126,15 +124,13 @@ def load_prompts(path: Path) -> List[str]:
                 raise ValueError(f"Invalid JSON in {path}: {exc}") from exc
             prompts.extend(_extract_prompts_from_json_payload(payload))
 
-        seen = set()
-        unique_prompts: List[str] = []
+        normalized_prompts: List[str] = []
         for prompt in prompts:
             normalized = prompt.strip()
-            if not normalized or normalized in seen:
+            if not normalized:
                 continue
-            seen.add(normalized)
-            unique_prompts.append(normalized)
-        return unique_prompts
+            normalized_prompts.append(normalized)
+        return normalized_prompts
 
     if suffix == ".md":
         text = path.read_text(encoding="utf-8").strip()

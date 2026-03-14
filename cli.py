@@ -1,18 +1,11 @@
 #!/usr/bin/env python3
-"""
-Agentic Dataset Generator CLI
-
-Usage:
-    python -m agentic_datagen.cli -c config.yaml
-"""
-
-import sys
 from pathlib import Path
+import sys
 
-# Add repo root so local modules can be imported directly
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from generator import main
+from agentic_datagen.cli import main
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

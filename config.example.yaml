@@ -25,6 +25,20 @@ workspace:
   base_dir: "sandbox" # Directory for agent workspaces, relative to repo root
   cleanup: true # Whether to delete workspace after successful processing
   preserve_on_error: true # Keep workspace if processing fails
+  command_runner:
+    mode: "docker" # Set to "host" to run built-in workspace tools sessions unsandboxed (not recommended due to port conflicts and security risks)
+    tool_scope: "all" # "command" = only run_command, "all" = read/write/edit/list/search + run_command
+    eager_start: false # Start the session container immediately instead of lazily on first tool execution
+    timeout_seconds: 30
+    bootstrap_trigger: "container_start" # "before_first_command" or "container_start"
+    bootstrap_timeout_seconds: 120
+    bootstrap_commands: [] # Example: ["if [ -f package.json ]; then npm install; fi", "if [ -f pyproject.toml ]; then uv sync; fi"]
+    docker_binary: "docker"
+    docker_image: "agentic-datagen-session-runtime:latest" # Build from src/docker/session-runtime.Dockerfile for a fuller Linux dev runtime
+    container_workspace_dir: "/workspace"
+    use_host_user: true # Preserve host file ownership for bind-mounted sandbox files
+    shell: "/bin/sh"
+    shell_args: ["-lc"]
 
 # Agent Configuration
 agent:

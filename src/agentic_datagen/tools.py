@@ -5,7 +5,7 @@ import requests
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from tool_registry import ToolRegistry as ExtensibleToolRegistry
+from .tool_registry import ToolRegistry as ExtensibleToolRegistry
 
 
 class LegacyToolRegistry:

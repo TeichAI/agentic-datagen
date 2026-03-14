@@ -4,14 +4,16 @@ import os
 import shutil
 import sys
 import threading
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
+
 import yaml
 
-from agent_session import AgentSession
-from formatter import Formatter
-from run_manifest import RunManifest
+from .agent_session import AgentSession
+from .formatter import Formatter
+from .run_manifest import RunManifest
 
 
 class AgenticDatasetGenerator:
@@ -42,23 +44,17 @@ class AgenticDatasetGenerator:
         self.run_manifest_file.parent.mkdir(parents=True, exist_ok=True)
         self.run_manifest = RunManifest(self.run_manifest_file, run_id=self.run_id)
 
-        # Handle overwrite mode initialization
         if not self.config.get("output", {}).get("append_mode", True):
             if self.output_file.exists():
                 self.output_file.unlink()
 
-        error_output_path = self.config.get("output", {}).get("error_dataset_file")
         self.error_output_file = None
-        if error_output_path:
-            self.error_output_file = Path(error_output_path)
-            self.error_output_file.parent.mkdir(parents=True, exist_ok=True)
 
         if self.config.get("output", {}).get("sanitize_existing_dataset", True):
             self._sanitize_output_dataset()
 
-        # Initialize global tool definitions if available
         self.enabled_tools = self.config["agent"].get("tools_enabled", [])
-        from tools import ToolRegistry
+        from .tools import ToolRegistry
 
         temp_registry = ToolRegistry(Path("."), self.config)
         self.tool_definitions = temp_registry.get_tool_definitions(self.enabled_tools)
@@ -96,7 +92,6 @@ class AgenticDatasetGenerator:
         """Get API key from config or environment."""
         api_config = self.config["api"]
 
-        # 1. Direct key in config
         if "api_key" in api_config and api_config["api_key"]:
             api_key = api_config["api_key"]
             self.logger.info(
@@ -104,7 +99,6 @@ class AgenticDatasetGenerator:
             )
             return api_key
 
-        # 2. Environment variable
         env_var = api_config.get("api_key_env", "OPENROUTER_API_KEY")
         api_key = os.getenv(env_var)
 
@@ -132,16 +126,10 @@ class AgenticDatasetGenerator:
 
     def _load_prompts(self) -> List[str]:
         """Load prompts from configured source."""
-        from utils import load_prompts
+        from .utils import load_prompts
 
         prompts_config = self.config["prompts"]
         source_path = Path(prompts_config["source"])
-
-        if self.error_output_file and source_path.resolve() == self.error_output_file.resolve():
-            raise ValueError(
-                "Prompt source and error_dataset_file must be different files"
-            )
-
         prompts = load_prompts(source_path)
 
         if prompts_config.get("shuffle", False):
@@ -155,12 +143,13 @@ class AgenticDatasetGenerator:
 
         return prompts
 
-    def _load_completed_prompts(self) -> Set[str]:
-        """Load prompts that have already been processed."""
-        completed = set()
+    def _load_completed_prompts(self) -> Tuple[Set[str], Counter[str]]:
+        """Load completed prompt IDs plus prompt-text counts for resume fallback."""
+        completed_ids: Set[str] = set()
+        completed_prompt_counts: Counter[str] = Counter()
 
         if not self.output_file.exists():
-            return completed
+            return completed_ids, completed_prompt_counts
 
         with self.output_file.open("r", encoding="utf-8") as f:
             for line in f:
@@ -170,15 +159,21 @@ class AgenticDatasetGenerator:
 
                 try:
                     entry = json.loads(line)
-                    if not self.formatter.validate_entry(entry, require_completion=True):
-                        continue
-                    prompt = entry.get("prompt")
-                    if prompt:
-                        completed.add(prompt.strip())
                 except json.JSONDecodeError:
                     continue
 
-        return completed
+                if not self.formatter.is_training_safe_entry(entry):
+                    continue
+
+                metadata = entry.get("metadata") or {}
+                prompt_id = metadata.get("prompt_id") if isinstance(metadata, dict) else None
+                prompt = entry.get("prompt")
+                if isinstance(prompt, str) and prompt.strip():
+                    completed_prompt_counts[prompt.strip()] += 1
+                if isinstance(prompt_id, str) and prompt_id.strip():
+                    completed_ids.add(prompt_id.strip())
+
+        return completed_ids, completed_prompt_counts
 
     def _sanitize_output_dataset(self) -> None:
         if not self.output_file.exists():
@@ -202,7 +197,7 @@ class AgenticDatasetGenerator:
                     removed_entries += 1
                     continue
 
-                if not self.formatter.validate_entry(entry, require_completion=True):
+                if not self.formatter.is_training_safe_entry(entry):
                     removed_entries += 1
                     continue
 
@@ -229,9 +224,29 @@ class AgenticDatasetGenerator:
         return workspace_dir
 
     def _cleanup_workspace(self, workspace_dir: Path):
-        """Remove workspace directory."""
-        if workspace_dir.exists():
-            shutil.rmtree(workspace_dir)
+        """Remove workspace directory with retry for stubborn files."""
+        if not workspace_dir.exists():
+            return
+        for attempt in range(3):
+            try:
+                shutil.rmtree(workspace_dir)
+                return
+            except OSError as e:
+                if attempt < 2:
+                    import time
+
+                    time.sleep(0.5 * (attempt + 1))
+                else:
+                    import subprocess
+
+                    try:
+                        subprocess.run(
+                            ["rm", "-rf", str(workspace_dir)],
+                            timeout=30,
+                            check=False,
+                        )
+                    except Exception:
+                        self.logger.warning(f"Could not fully clean {workspace_dir}: {e}")
 
     def _process_prompt(self, prompt: str, index: int) -> Optional[Dict[str, Any]]:
         """Process a single prompt and return formatted entry."""
@@ -258,7 +273,9 @@ class AgenticDatasetGenerator:
             session_data = session.run()
 
             is_error = bool(session_data.get("error"))
-            is_completed = bool(session_data.get("completed") and not session_data.get("error"))
+            is_completed = bool(
+                session_data.get("completed") and not session_data.get("error")
+            )
             status = "completed"
             if not is_completed and session_data.get("retryable"):
                 status = "retryable_error"
@@ -285,11 +302,7 @@ class AgenticDatasetGenerator:
                     self._cleanup_workspace(workspace_dir)
 
             formatted_entry = self.formatter.format_session(session_data)
-
-            # Add tools column
             formatted_entry["tools"] = self.tool_definitions
-
-            # Reorder columns for output readability
             formatted_entry = {
                 "prompt": formatted_entry.get("prompt"),
                 "tools": formatted_entry.get("tools"),
@@ -336,35 +349,21 @@ class AgenticDatasetGenerator:
     def _append_to_dataset(self, entry: Dict[str, Any]):
         """Append entry to dataset file."""
         jsonl_line = self.formatter.to_jsonl_line(entry)
-
-        # Always append, because we handled truncation in __init__
         with self.write_lock:
             with self.output_file.open("a", encoding="utf-8") as f:
                 f.write(jsonl_line + "\n")
 
-    def _append_to_error_dataset(self, entry: Dict[str, Any]):
-        """Append entry to error dataset file."""
-        if not self.error_output_file:
-            return
-
-        jsonl_line = self.formatter.to_jsonl_line(entry)
-        with self.write_lock:
-            with self.error_output_file.open("a", encoding="utf-8") as f:
-                f.write(jsonl_line + "\n")
-
     def _is_training_safe_entry(self, entry: Dict[str, Any]) -> bool:
-        return self.formatter.validate_entry(entry, require_completion=True)
+        return self.formatter.is_training_safe_entry(entry)
 
     def _route_entry(self, entry: Dict[str, Any]) -> None:
+        """Route entry to dataset if training-safe, otherwise just track in manifest."""
         prompt_id = (entry.get("metadata") or {}).get("prompt_id")
         if self._is_training_safe_entry(entry):
             self._append_to_dataset(entry)
             self.run_manifest.set_route(prompt_id, "dataset")
-            return
-
-        if self.error_output_file and self.formatter.validate_entry(entry):
-            self._append_to_error_dataset(entry)
-            self.run_manifest.set_route(prompt_id, "error_dataset")
+        else:
+            self.run_manifest.set_route(prompt_id, "skipped")
 
     def generate(self):
         """Main generation loop."""
@@ -376,13 +375,38 @@ class AgenticDatasetGenerator:
         self.logger.info(f"Loaded {len(prompts)} prompts")
 
         if self.config["processing"].get("resume", True):
-            completed = self._load_completed_prompts()
-            self.logger.info(f"Found {len(completed)} completed prompts")
-            self.run_manifest.seed_prompts(prompts, completed)
+            completed_ids, completed_prompt_counts = self._load_completed_prompts()
+            completed_total = sum(completed_prompt_counts.values())
+            self.logger.info(f"Found {completed_total} clean dataset rows")
+            self.run_manifest.seed_prompts(
+                prompts,
+                completed_ids,
+                completed_prompt_counts,
+            )
 
-            prompts_to_process = [
-                (i, p) for i, p in enumerate(prompts) if p.strip() not in completed
-            ]
+            remaining_prompt_counts = Counter(completed_prompt_counts)
+            prompts_to_process = []
+            matched_prompt_ids = 0
+            matched_prompt_text_fallback = 0
+            for i, prompt in enumerate(prompts):
+                prompt_id = self.run_manifest.make_prompt_id(i, prompt)
+                normalized_prompt = prompt.strip()
+                if prompt_id in completed_ids:
+                    matched_prompt_ids += 1
+                    if remaining_prompt_counts.get(normalized_prompt, 0) > 0:
+                        remaining_prompt_counts[normalized_prompt] -= 1
+                    continue
+                if remaining_prompt_counts.get(normalized_prompt, 0) > 0:
+                    matched_prompt_text_fallback += 1
+                    remaining_prompt_counts[normalized_prompt] -= 1
+                    continue
+                prompts_to_process.append((i, prompt))
+
+            self.logger.info(
+                "Resume match summary: %s prompt_ids matched directly, %s prompts matched by text fallback",
+                matched_prompt_ids,
+                matched_prompt_text_fallback,
+            )
         else:
             self.run_manifest.seed_prompts(prompts, set())
             prompts_to_process = list(enumerate(prompts))
@@ -396,7 +420,6 @@ class AgenticDatasetGenerator:
         concurrency = self.config["processing"].get("concurrency", 1)
         total_prompts = len(prompts_to_process)
 
-        # Tracking metrics
         self.total_cost = 0.0
         self.total_tokens = 0
 
@@ -450,7 +473,7 @@ class AgenticDatasetGenerator:
         self.logger.info(f"Output saved to: {self.output_file}")
 
 
-def main():
+def main(argv: Optional[List[str]] = None) -> int:
     """CLI entry point."""
     import argparse
 
@@ -461,18 +484,19 @@ def main():
         "-c", "--config", required=True, help="Path to configuration YAML file"
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     try:
         generator = AgenticDatasetGenerator(args.config)
         generator.generate()
+        return 0
     except Exception as e:
         import traceback
 
         traceback.print_exc()
         print(f"Fatal error: {e}", file=sys.stderr)
-        sys.exit(1)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
