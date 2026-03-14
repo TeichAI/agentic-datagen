@@ -365,7 +365,7 @@ agent:
 Notes:
 
 - Remote MCP tools are exposed locally as either `mcp__<server>__<tool>` or `<tool_name_prefix>__<tool>`.
-- A selector like `context7:*` enables every discovered tool from that MCP server, which is convenient for Context7.
+- A selector like `context7:*` enables every discovered tool from that MCP server.
 - When `tools.strict_mcp` is `false`, unreachable MCP servers are skipped instead of failing the whole run.
 - Current support targets MCP JSON-RPC over HTTP.
 
