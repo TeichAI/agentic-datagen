@@ -1,9 +1,97 @@
 import json
+import re
 from typing import Any, Dict, List
 
 
 class Formatter:
     """Format agentic sessions to proper format."""
+
+    THINK_BLOCK_RE = re.compile(r"^\s*<think>(.*?)</think>\s*(.*)$", re.DOTALL)
+
+    @classmethod
+    def split_content_and_thinking(
+        cls, content: Any, thinking: Any = None
+    ) -> tuple[str, str | None]:
+        normalized_content = content if isinstance(content, str) else ""
+        normalized_thinking = thinking.strip() if isinstance(thinking, str) and thinking.strip() else None
+        if normalized_thinking is not None:
+            return normalized_content, normalized_thinking
+        if not normalized_content:
+            return "", None
+        match = cls.THINK_BLOCK_RE.match(normalized_content)
+        if not match:
+            return normalized_content, None
+        extracted_thinking = match.group(1).strip()
+        extracted_content = match.group(2)
+        return extracted_content, extracted_thinking or None
+
+    @staticmethod
+    def _normalize_tool_call(call: Dict[str, Any]) -> Dict[str, Any]:
+        normalized_call = dict(call)
+        function_payload = normalized_call.get("function")
+        if not isinstance(function_payload, dict):
+            return normalized_call
+        normalized_function = dict(function_payload)
+        arguments = normalized_function.get("arguments")
+        if isinstance(arguments, str):
+            stripped_arguments = arguments.strip()
+            if not stripped_arguments:
+                normalized_function["arguments"] = {}
+            else:
+                try:
+                    normalized_function["arguments"] = json.loads(stripped_arguments)
+                except json.JSONDecodeError:
+                    normalized_function["arguments"] = arguments
+        elif arguments is None:
+            normalized_function["arguments"] = {}
+        normalized_call["function"] = normalized_function
+        return normalized_call
+
+    @classmethod
+    def normalize_tool_calls(cls, tool_calls: Any) -> List[Dict[str, Any]]:
+        if not isinstance(tool_calls, list):
+            return []
+        normalized_calls: List[Dict[str, Any]] = []
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            normalized_calls.append(cls._normalize_tool_call(tool_call))
+        return normalized_calls
+
+    @classmethod
+    def canonicalize_messages(cls, messages: Any) -> List[Dict[str, Any]]:
+        if not isinstance(messages, list):
+            return []
+        normalized_messages: List[Dict[str, Any]] = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            content, thinking = cls.split_content_and_thinking(
+                msg.get("content", ""), msg.get("thinking")
+            )
+            normalized_msg: Dict[str, Any] = {"role": role, "content": content}
+            if thinking is not None:
+                normalized_msg["thinking"] = thinking
+            if role == "assistant" and "tool_calls" in msg:
+                normalized_msg["tool_calls"] = cls.normalize_tool_calls(msg.get("tool_calls"))
+            if role == "tool":
+                tool_call_id = msg.get("tool_call_id")
+                name = msg.get("name")
+                if tool_call_id is not None:
+                    normalized_msg["tool_call_id"] = tool_call_id
+                if name is not None:
+                    normalized_msg["name"] = name
+            normalized_messages.append(normalized_msg)
+        return normalized_messages
+
+    @classmethod
+    def canonicalize_entry(cls, entry: Dict[str, Any]) -> Dict[str, Any]:
+        normalized_entry = dict(entry)
+        normalized_entry["messages"] = cls.canonicalize_messages(entry.get("messages"))
+        if "tools" in entry and isinstance(entry.get("tools"), list):
+            normalized_entry["tools"] = entry.get("tools")
+        return normalized_entry
 
     @staticmethod
     def _prompt_requires_artifact(prompt: str) -> bool:
@@ -88,12 +176,19 @@ class Formatter:
 
         for msg in conversation:
             role = msg.get("role")
-            content = msg.get("content", "")
+            content, thinking = Formatter.split_content_and_thinking(
+                msg.get("content", ""), msg.get("thinking")
+            )
 
             formatted_msg = {"role": role, "content": content}
 
+            if thinking is not None:
+                formatted_msg["thinking"] = thinking
+
             if role == "assistant" and "tool_calls" in msg:
-                formatted_msg["tool_calls"] = msg["tool_calls"]
+                formatted_msg["tool_calls"] = Formatter.normalize_tool_calls(
+                    msg["tool_calls"]
+                )
 
             if role == "tool":
                 formatted_msg["tool_call_id"] = msg.get("tool_call_id")
@@ -136,6 +231,7 @@ class Formatter:
     @staticmethod
     def validate_entry(entry: Dict[str, Any], require_completion: bool = False) -> bool:
         """Validate that an entry has the required structure."""
+        entry = Formatter.canonicalize_entry(entry)
         if not isinstance(entry, dict):
             return False
 
@@ -195,4 +291,4 @@ class Formatter:
     @staticmethod
     def to_jsonl_line(entry: Dict[str, Any]) -> str:
         """Convert entry to JSONL line."""
-        return json.dumps(entry, ensure_ascii=False)
+        return json.dumps(Formatter.canonicalize_entry(entry), ensure_ascii=False)

@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from agentic_datagen.dataset_cleanup import CleanupPolicy, apply_cleanup, plan_cleanup
 from agentic_datagen.dataset_qa import analyze_entry, load_reports, summarize_reports
 from agentic_datagen.formatter import Formatter
+from agentic_datagen.generator import build_dataset_readme
 from agentic_datagen.run_manifest import RunManifest
 from agentic_datagen.tool_registry import ToolRegistry
 from agentic_datagen.utils import load_prompts
@@ -88,6 +89,117 @@ class MCPHandler(BaseHTTPRequestHandler):
 
 
 class InfrastructureTests(unittest.TestCase):
+    def test_formatter_canonicalizes_inline_thinking_and_tool_arguments(self) -> None:
+        formatter = Formatter()
+        entry = {
+            "prompt": "Build a dashboard",
+            "messages": [
+                {"role": "system", "content": "You are a coding agent."},
+                {"role": "user", "content": "Build a dashboard"},
+                {
+                    "role": "assistant",
+                    "content": "<think>I should create the file first.</think>",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "write_file",
+                                "arguments": '{"path": "index.html", "content": "<h1>Hello</h1>"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "name": "write_file",
+                    "content": '{"success": true}',
+                },
+                {
+                    "role": "assistant",
+                    "content": "<think>The file is ready.</think>Done.",
+                },
+            ],
+            "metadata": {
+                "prompt_id": "prompt_1",
+                "run_id": "run_test",
+                "session_id": "session_1",
+                "turns": 2,
+                "completed": True,
+                "tool_calls_count": 1,
+                "error": None,
+                "retryable": False,
+            },
+            "usage": {"total_tokens": 10, "cost": 0.0},
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "description": "Write a file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+        }
+
+        canonical = formatter.canonicalize_entry(entry)
+
+        self.assertEqual(canonical["messages"][2]["thinking"], "I should create the file first.")
+        self.assertEqual(canonical["messages"][2]["content"], "")
+        self.assertEqual(
+            canonical["messages"][2]["tool_calls"][0]["function"]["arguments"],
+            {"path": "index.html", "content": "<h1>Hello</h1>"},
+        )
+        self.assertEqual(canonical["messages"][4]["thinking"], "The file is ready.")
+        self.assertEqual(canonical["messages"][4]["content"], "Done.")
+
+    def test_build_dataset_readme_uses_aligned_dataset_schema(self) -> None:
+        readme = build_dataset_readme(
+            {
+                "api": {
+                    "model": "anthropic/claude-3.7-sonnet",
+                    "reasoning_effort": "high",
+                },
+                "agent": {
+                    "system_prompt": "You are Claude. A friendly, helpful assistant",
+                },
+                "output": {
+                    "dataset_card": {
+                        "title": "My Dataset",
+                        "description": "Custom description",
+                        "license": "apache-2.0",
+                        "config_name": "default",
+                        "split": "train",
+                    }
+                },
+            },
+            Path("datasets/agentic_dataset.jsonl"),
+            42,
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the web",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"query": {"type": "string"}},
+                            "required": ["query"],
+                        },
+                    },
+                }
+            ],
+        )
+
+        self.assertIn("# My Dataset", readme)
+        self.assertIn('path: "agentic_dataset.jsonl"', readme)
+        self.assertIn('"thinking": "..."', readme)
+        self.assertIn('"tool_calls"', readme)
+        self.assertIn('"tools"', readme)
+        self.assertIn("- Reasoning effort: `high`", readme)
+
     def test_read_file_supports_offset_and_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             workspace = Path(tmp_dir) / "workspace"

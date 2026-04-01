@@ -272,19 +272,14 @@ class AgentSession:
             if not reasoning_content and "reasoning" in assistant_message:
                 reasoning_content = assistant_message["reasoning"]
 
-            # Prepend reasoning to content with <think> tags
-            if reasoning_content:
-                original_content = assistant_message.get("content") or ""
-                assistant_message["content"] = (
-                    f"<think>{reasoning_content}</think>\n{original_content}"
-                )
-
             # Sanitize message before appending to history
             # Remove provider-specific fields that might cause 400 errors on next turn
             clean_message = {
                 "role": assistant_message.get("role", "assistant"),
-                "content": assistant_message.get("content"),
+                "content": assistant_message.get("content") or "",
             }
+            if isinstance(reasoning_content, str) and reasoning_content.strip():
+                clean_message["thinking"] = reasoning_content.strip()
             if "tool_calls" in assistant_message:
                 clean_message["tool_calls"] = assistant_message["tool_calls"]
 
