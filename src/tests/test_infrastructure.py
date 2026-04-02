@@ -17,6 +17,11 @@ from agentic_datagen.dataset_qa import analyze_entry, load_reports, summarize_re
 from agentic_datagen.formatter import Formatter
 from agentic_datagen.generator import build_dataset_readme
 from agentic_datagen.run_manifest import RunManifest
+from agentic_datagen.session_engines import (
+    OpenCodeSessionEngine,
+    create_session_engine,
+    get_engine_tool_definitions,
+)
 from agentic_datagen.tool_registry import ToolRegistry
 from agentic_datagen.utils import load_prompts
 
@@ -199,6 +204,161 @@ class InfrastructureTests(unittest.TestCase):
         self.assertIn('"tool_calls"', readme)
         self.assertIn('"tools"', readme)
         self.assertIn("- Reasoning effort: `high`", readme)
+
+    def test_session_engine_factory_selects_opencode_backend(self) -> None:
+        engine = create_session_engine(
+            prompt="Build a dashboard",
+            workspace_dir=Path("."),
+            api_config={"provider": "openrouter", "api_key": "test", "model": "openrouter/openai/gpt-4.1"},
+            agent_config={"engine": "opencode", "tools_enabled": ["read_file", "run_command"]},
+            session_id="session_1",
+            runtime_config={
+                "api": {"provider": "openrouter", "api_key": "test", "model": "openrouter/openai/gpt-4.1"},
+                "agent": {"engine": "opencode", "tools_enabled": ["read_file", "run_command"]},
+                "workspace": {"command_runner": {"mode": "host"}},
+            },
+        )
+        try:
+            self.assertIsInstance(engine, OpenCodeSessionEngine)
+        finally:
+            engine.close()
+
+    def test_engine_tool_definitions_switch_to_opencode_tools(self) -> None:
+        definitions = get_engine_tool_definitions(
+            {
+                "agent": {
+                    "engine": "opencode",
+                    "tools_enabled": ["read_file", "run_command", "web_search"],
+                }
+            },
+            ["read_file", "run_command", "web_search"],
+        )
+
+        tool_names = [item["function"]["name"] for item in definitions]
+        self.assertIn("read", tool_names)
+        self.assertIn("bash", tool_names)
+        self.assertIn("websearch", tool_names)
+        self.assertIn("webfetch", tool_names)
+
+    def test_opencode_events_are_converted_to_dataset_session_payload(self) -> None:
+        session_data = OpenCodeSessionEngine.build_session_data_from_events(
+            prompt="Build a dashboard",
+            workspace_dir=Path("."),
+            agent_config={"system_prompt": "You are a coding agent."},
+            session_id="session_1",
+            prompt_id="prompt_1",
+            run_id="run_1",
+            inline_system_prompt=False,
+            events=[
+                {
+                    "type": "message.updated",
+                    "properties": {
+                        "info": {
+                            "id": "user_1",
+                            "sessionID": "session_1",
+                            "role": "user",
+                            "time": {"created": 1},
+                            "agent": "coder",
+                            "model": {"providerID": "openrouter", "modelID": "gpt-4.1"},
+                        }
+                    },
+                },
+                {
+                    "type": "message.part.updated",
+                    "properties": {
+                        "part": {
+                            "id": "user_part_1",
+                            "sessionID": "session_1",
+                            "messageID": "user_1",
+                            "type": "text",
+                            "text": "Build a dashboard",
+                        }
+                    },
+                },
+                {
+                    "type": "message.updated",
+                    "properties": {
+                        "info": {
+                            "id": "assistant_1",
+                            "sessionID": "session_1",
+                            "role": "assistant",
+                            "time": {"created": 2, "completed": 3},
+                            "parentID": "user_1",
+                            "modelID": "gpt-4.1",
+                            "providerID": "openrouter",
+                            "mode": "run",
+                            "path": {"cwd": ".", "root": "."},
+                            "cost": 0.12,
+                            "tokens": {
+                                "input": 10,
+                                "output": 20,
+                                "reasoning": 5,
+                                "cache": {"read": 0, "write": 0},
+                            },
+                        }
+                    },
+                },
+                {
+                    "type": "message.part.updated",
+                    "properties": {
+                        "part": {
+                            "id": "reasoning_1",
+                            "sessionID": "session_1",
+                            "messageID": "assistant_1",
+                            "type": "reasoning",
+                            "text": "I should inspect the files first.",
+                            "time": {"start": 2, "end": 2},
+                        }
+                    },
+                },
+                {
+                    "type": "message.part.updated",
+                    "properties": {
+                        "part": {
+                            "id": "tool_1",
+                            "sessionID": "session_1",
+                            "messageID": "assistant_1",
+                            "type": "tool",
+                            "callID": "call_1",
+                            "tool": "read",
+                            "state": {
+                                "status": "completed",
+                                "input": {"filePath": "src/app.py"},
+                                "output": "print('hello')",
+                                "title": "Read src/app.py",
+                                "metadata": {},
+                                "time": {"start": 2, "end": 2},
+                            },
+                        }
+                    },
+                },
+                {
+                    "type": "message.part.updated",
+                    "properties": {
+                        "part": {
+                            "id": "text_1",
+                            "sessionID": "session_1",
+                            "messageID": "assistant_1",
+                            "type": "text",
+                            "text": "The dashboard is ready.",
+                        }
+                    },
+                },
+            ],
+        )
+
+        self.assertEqual(session_data["session_id"], "session_1")
+        self.assertTrue(session_data["completed"])
+        self.assertEqual(session_data["usage"]["reasoning_tokens"], 5)
+        self.assertEqual(session_data["messages"] if "messages" in session_data else session_data["conversation"], session_data["conversation"])
+        self.assertEqual(session_data["conversation"][0]["role"], "user")
+        self.assertEqual(session_data["conversation"][1]["role"], "assistant")
+        self.assertEqual(session_data["conversation"][1]["thinking"], "I should inspect the files first.")
+        self.assertEqual(session_data["conversation"][1]["tool_calls"][0]["function"]["name"], "read")
+        self.assertEqual(session_data["conversation"][2]["role"], "tool")
+        self.assertEqual(session_data["conversation"][2]["name"], "read")
+        self.assertEqual(session_data["conversation"][3]["content"], "The dashboard is ready.")
+        self.assertEqual(session_data["final_response"], "The dashboard is ready.")
 
     def test_read_file_supports_offset_and_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

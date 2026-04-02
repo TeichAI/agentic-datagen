@@ -42,8 +42,16 @@ workspace:
 
 # Agent Configuration
 agent:
+  engine: "native" # "native" = existing OpenRouter-style tool loop, "opencode" = external OpenCode CLI backend
   max_turns: 50 # Maximum conversation turns per prompt
   system_prompt: null # Optional: override the default prompt, which uses Context7 for current library/framework docs when available
+  opencode:
+    binary: "opencode" # Path to the OpenCode CLI binary when agent.engine = "opencode"
+    model: null # Optional override for the OpenCode model string (defaults to api.model)
+    agent: null # Optional OpenCode agent name
+    timeout_seconds: 600
+    inline_system_prompt: false # If true, prepend agent.system_prompt to the user prompt because OpenCode CLI run mode has no dedicated system prompt flag
+    extra_args: []
   tools_enabled:
     - read_file
     - write_file

@@ -11,9 +11,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 
-from .agent_session import AgentSession
 from .formatter import Formatter
 from .run_manifest import RunManifest
+from .session_engines import create_session_engine, get_engine_tool_definitions
 
 
 def _derive_dataset_title(dataset_file: Path) -> str:
@@ -191,10 +191,10 @@ class AgenticDatasetGenerator:
             self._sanitize_output_dataset()
 
         self.enabled_tools = self.config["agent"].get("tools_enabled", [])
-        from .tools import ToolRegistry
-
-        temp_registry = ToolRegistry(Path("."), self.config)
-        self.tool_definitions = temp_registry.get_tool_definitions(self.enabled_tools)
+        self.tool_definitions = get_engine_tool_definitions(
+            self.config,
+            self.enabled_tools,
+        )
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration from YAML file."""
@@ -418,13 +418,13 @@ class AgenticDatasetGenerator:
         prompt_id = self.run_manifest.make_prompt_id(index, prompt)
         session_id = f"session_{index:06d}"
         workspace_dir = self._create_workspace(session_id)
-        session: Optional[AgentSession] = None
+        session = None
 
         self.logger.info(f"Processing prompt {index}: {prompt[:80]}...")
         self.run_manifest.mark_running(prompt_id, index, prompt, workspace_dir)
 
         try:
-            session = AgentSession(
+            session = create_session_engine(
                 prompt=prompt,
                 workspace_dir=workspace_dir,
                 api_config=self.config["api"],
