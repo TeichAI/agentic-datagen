@@ -4,9 +4,11 @@ import os
 import shutil
 import sys
 import threading
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
@@ -14,6 +16,201 @@ import yaml
 from .formatter import Formatter
 from .run_manifest import RunManifest
 from .session_engines import create_session_engine, get_engine_tool_definitions
+from .tool_registry import ToolRegistry
+from .utils import delete_session_state
+
+
+DEFAULT_ENABLED_TOOLS = [
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_directory",
+    "search_code",
+    "run_command",
+    "web_search",
+    "workspace_snapshot",
+    "context7:*",
+]
+
+PROVIDER_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "openrouter": {
+        "base_url": "https://openrouter.ai/api/v1/chat/completions",
+        "api_key_env": "OPENROUTER_API_KEY",
+    },
+    "openai": {
+        "base_url": "https://api.openai.com/v1/chat/completions",
+        "api_key_env": "OPENAI_API_KEY",
+    },
+}
+
+
+DEFAULT_CONFIG: Dict[str, Any] = {
+    "api": {
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1/chat/completions",
+        "model": None,
+        "api_key": None,
+        "api_key_env": "OPENROUTER_API_KEY",
+        "reasoning_effort": None,
+        "max_retries": 5,
+        "backoff_base_seconds": 2.0,
+        "backoff_max_seconds": 60.0,
+        "timeout": 120,
+        "searxng_url": None,
+    },
+    "prompts": {
+        "source": "prompts.txt",
+        "limit": None,
+        "shuffle": False,
+    },
+    "workspace": {
+        "base_dir": "sandbox",
+        "cleanup": True,
+        "preserve_on_error": True,
+        "command_runner": {
+            "mode": "docker",
+            "tool_scope": "all",
+            "docker_image": "agentic-datagen-session-runtime:latest",
+        },
+    },
+    "agent": {
+        "engine": "native",
+        "max_turns": 50,
+        "system_prompt": None,
+        "tools_enabled": list(DEFAULT_ENABLED_TOOLS),
+    },
+    "tools": {
+        "custom_python_modules": [],
+        "strict_mcp": False,
+        "mcp_servers": {},
+    },
+    "output": {
+        "dataset_file": "datasets/agentic_dataset.jsonl",
+        "append_mode": True,
+        "sanitize_existing_dataset": True,
+    },
+    "processing": {
+        "concurrency": 1,
+        "resume": True,
+        "retryable_session_max_attempts": 2,
+    },
+    "logging": {
+        "level": "INFO",
+        "console": True,
+    },
+}
+
+
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _normalize_base_url(provider: str, base_url: Any) -> Any:
+    if not isinstance(base_url, str):
+        return base_url
+    normalized = base_url.strip()
+    if not normalized:
+        return None
+    parsed = urlparse(normalized)
+    path = (parsed.path or "").rstrip("/")
+    if path.endswith("/chat/completions") or path == "/chat/completions":
+        return normalized.rstrip("/")
+    if path.endswith("/v1") or path == "/v1":
+        return f"{normalized.rstrip('/')}/chat/completions"
+    if provider == "openai" and path in {"", "/"}:
+        return f"{normalized.rstrip('/')}/v1/chat/completions"
+    return normalized.rstrip("/")
+
+
+def _is_local_base_url(base_url: Any) -> bool:
+    if not isinstance(base_url, str) or not base_url.strip():
+        return False
+    parsed = urlparse(base_url)
+    hostname = (parsed.hostname or "").lower()
+    return hostname in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
+def normalize_config(raw_config: Dict[str, Any]) -> Dict[str, Any]:
+    raw = raw_config if isinstance(raw_config, dict) else {}
+    config = _deep_merge(DEFAULT_CONFIG, raw)
+
+    model_config = _as_dict(raw.get("model"))
+    tools_config = _as_dict(raw.get("tools"))
+    tool_web_search_config = _as_dict(tools_config.get("web_search"))
+    api_config = config.setdefault("api", {})
+    provider = str(api_config.get("provider") or "openrouter").strip().lower() or "openrouter"
+    provider_defaults = PROVIDER_DEFAULTS.get(provider, {})
+    api_config["provider"] = provider
+    if not api_config.get("base_url"):
+        api_config["base_url"] = provider_defaults.get("base_url")
+    if not api_config.get("api_key_env"):
+        api_config["api_key_env"] = provider_defaults.get("api_key_env")
+
+    if model_config:
+        agent_config = config.setdefault("agent", {})
+        model_provider = model_config.get("provider", api_config.get("provider"))
+        provider = str(model_provider or "openrouter").strip().lower() or "openrouter"
+        provider_defaults = PROVIDER_DEFAULTS.get(provider, {})
+        api_config["provider"] = provider
+        if "base_url" in model_config:
+            api_config["base_url"] = model_config.get("base_url")
+        elif raw.get("api", {}).get("base_url") in (None, ""):
+            api_config["base_url"] = provider_defaults.get("base_url", api_config.get("base_url"))
+        model_name = model_config.get("name") or model_config.get("model")
+        if model_name is not None:
+            api_config["model"] = model_name
+        for key in [
+            "api_key",
+            "api_key_env",
+            "reasoning_effort",
+            "max_retries",
+            "backoff_base_seconds",
+            "backoff_max_seconds",
+            "timeout",
+        ]:
+            if key in model_config:
+                api_config[key] = model_config.get(key)
+        if "api_key_env" not in model_config and raw.get("api", {}).get("api_key_env") in (None, ""):
+            api_config["api_key_env"] = provider_defaults.get("api_key_env", api_config.get("api_key_env"))
+        if "system_prompt" in model_config:
+            agent_config["system_prompt"] = model_config.get("system_prompt")
+        if "max_turns" in model_config:
+            agent_config["max_turns"] = model_config.get("max_turns")
+
+    api_config["base_url"] = _normalize_base_url(
+        str(api_config.get("provider") or "openrouter").strip().lower() or "openrouter",
+        api_config.get("base_url"),
+    )
+
+    enabled_tools = tools_config.get("enabled")
+    if isinstance(enabled_tools, list):
+        config.setdefault("agent", {})["tools_enabled"] = enabled_tools
+
+    if "custom_python_modules" in tools_config:
+        config.setdefault("tools", {})["custom_python_modules"] = tools_config.get(
+            "custom_python_modules"
+        ) or []
+    if "strict_mcp" in tools_config:
+        config.setdefault("tools", {})["strict_mcp"] = bool(tools_config.get("strict_mcp"))
+    if "mcp_servers" in tools_config and isinstance(tools_config.get("mcp_servers"), (dict, list)):
+        config.setdefault("tools", {})["mcp_servers"] = tools_config.get("mcp_servers")
+
+    searxng_url = tool_web_search_config.get("searxng_url") or tools_config.get("searxng_url")
+    if searxng_url is not None:
+        config.setdefault("api", {})["searxng_url"] = searxng_url
+
+    return config
 
 
 def _derive_dataset_title(dataset_file: Path) -> str:
@@ -27,6 +224,95 @@ def _default_dataset_description(model: str | None) -> str:
     if model:
         return f"This is an agentic coding dataset generated using {model}."
     return "This is an agentic coding dataset generated by agentic-datagen."
+
+
+def _default_pretty_name(model: str | None) -> str:
+    return f"{model or 'agentic-datagen'} coding agent traces"
+
+
+def _string_list(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    items: List[str] = []
+    for item in value:
+        text = str(item).strip() if item is not None else ""
+        if text:
+            items.append(text)
+    return items
+
+
+def _merge_unique_lists(*values: List[str]) -> List[str]:
+    merged: List[str] = []
+    seen: Set[str] = set()
+    for group in values:
+        for item in group:
+            if item not in seen:
+                seen.add(item)
+                merged.append(item)
+    return merged
+
+
+def _example_argument_value(schema: Dict[str, Any]) -> Any:
+    if not isinstance(schema, dict):
+        return "..."
+    enum_values = schema.get("enum")
+    if isinstance(enum_values, list) and enum_values:
+        return enum_values[0]
+    arg_type = schema.get("type")
+    if arg_type == "integer":
+        return 1
+    if arg_type == "number":
+        return 1
+    if arg_type == "boolean":
+        return False
+    if arg_type == "array":
+        return []
+    if arg_type == "object":
+        return {}
+    return "..."
+
+
+def _example_tool_payload(tool_definitions: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    fallback_tool = {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Create or overwrite a file in the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["file_path", "content"],
+            },
+        },
+    }
+    tool_definition = fallback_tool
+    for candidate in tool_definitions:
+        if isinstance(candidate, dict) and isinstance(candidate.get("function"), dict):
+            tool_definition = candidate
+            break
+
+    function = tool_definition.get("function", {})
+    parameters = function.get("parameters", {}) if isinstance(function, dict) else {}
+    properties = parameters.get("properties", {}) if isinstance(parameters, dict) else {}
+    required = parameters.get("required", []) if isinstance(parameters, dict) else []
+    arguments: Dict[str, Any] = {}
+    if isinstance(properties, dict):
+        for name in required:
+            if isinstance(name, str) and name in properties:
+                arguments[name] = _example_argument_value(properties.get(name) or {})
+
+    return tool_definition, {
+        "id": "call_1",
+        "type": "function",
+        "index": 0,
+        "function": {
+            "name": function.get("name", "write_file") if isinstance(function, dict) else "write_file",
+            "arguments": arguments,
+        },
+    }
 
 
 def build_dataset_readme(
@@ -57,10 +343,93 @@ def build_dataset_readme(
     tool_line = ", ".join(f"`{name}`" for name in tool_names) if tool_names else "No tools configured"
     model = api_config.get("model")
     reasoning_effort = api_config.get("reasoning_effort") or "not set"
+    pretty_name = card_config.get("pretty_name") or _default_pretty_name(model)
+    task_categories = _merge_unique_lists(
+        ["text-generation"],
+        _string_list(card_config.get("task_categories")),
+    )
+    tags = _merge_unique_lists(
+        ["agent-traces", "coding-agent"],
+        _string_list(card_config.get("tags")),
+    )
+    example_tool_definition, example_tool_call = _example_tool_payload(tool_definitions)
+    base_metadata = {
+        "prompt_id": "prompt_000000_abc123",
+        "run_id": "run_20260414T000000Z",
+        "session_id": "session_000000",
+        "turns": 1,
+        "completed": True,
+        "tool_calls_count": 0,
+        "error": None,
+        "retryable": False,
+    }
+    base_usage = {
+        "prompt_tokens": 256,
+        "completion_tokens": 128,
+        "reasoning_tokens": 32,
+        "total_tokens": 416,
+        "cost": 0.0,
+    }
+    non_tool_row = {
+        "prompt": "...",
+        "tools": tool_definitions,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "..."},
+            {
+                "role": "assistant",
+                "reasoning_content": "...",
+                "content": "Final answer...",
+            },
+        ],
+        "metadata": base_metadata,
+        "usage": base_usage,
+    }
+    tool_row = {
+        "prompt": "...",
+        "tools": [example_tool_definition],
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "..."},
+            {
+                "role": "assistant",
+                "reasoning_content": "...",
+                "content": "",
+                "tool_calls": [example_tool_call],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "name": example_tool_call["function"]["name"],
+                "content": "...",
+            },
+            {
+                "role": "assistant",
+                "content": "Final answer after tool result...",
+            },
+        ],
+        "metadata": {
+            **base_metadata,
+            "turns": 2,
+            "tool_calls_count": 1,
+        },
+        "usage": {
+            **base_usage,
+            "prompt_tokens": 512,
+            "completion_tokens": 160,
+            "reasoning_tokens": 48,
+            "total_tokens": 720,
+        },
+    }
 
     return "\n".join(
         [
             "---",
+            f"pretty_name: {json.dumps(pretty_name)}",
+            "task_categories:",
+            *[f"- {json.dumps(category)}" for category in task_categories],
+            "tags:",
+            *[f"- {json.dumps(tag)}" for tag in tags],
             f"license: {license_name}",
             "configs:",
             f"- config_name: {config_name}",
@@ -77,72 +446,29 @@ def build_dataset_readme(
             "",
             "## Formatting guide",
             "",
-            "### Non-tool row",
+            "Each row in the dataset includes the same top-level keys: `prompt`, `tools`, `messages`, `metadata`, and `usage`.",
+            "",
+            "### Completed row without tool use",
             "",
             "```json",
-            json.dumps(
-                {
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": "..."},
-                        {
-                            "role": "assistant",
-                            "thinking": "...",
-                            "content": "Final answer...",
-                        },
-                    ]
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
+            json.dumps(non_tool_row, ensure_ascii=False, indent=2),
             "```",
             "",
-            "### Tool row",
+            "### Completed row with tool use",
             "",
             "```json",
-            json.dumps(
-                {
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": "..."},
-                        {
-                            "role": "assistant",
-                            "thinking": "...",
-                            "content": "",
-                            "tool_calls": [
-                                {
-                                    "type": "function",
-                                    "function": {
-                                        "name": tool_names[0] if tool_names else "write_file",
-                                        "arguments": {"query": "..."},
-                                    },
-                                }
-                            ],
-                        },
-                        {
-                            "role": "tool",
-                            "name": tool_names[0] if tool_names else "write_file",
-                            "content": "...",
-                        },
-                        {
-                            "role": "assistant",
-                            "content": "Final answer after tool result...",
-                        },
-                    ],
-                    "tools": tool_definitions[:1] if tool_definitions else [],
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
+            json.dumps(tool_row, ensure_ascii=False, indent=2),
             "```",
             "",
-            "`thinking` is only included when a reasoning trace is present. All other fields, including `tool_calls` inside messages and the top-level `tools` schema, are preserved as-is.",
+            "`reasoning_content` is only included when a reasoning trace is present. Assistant `tool_calls` stay inside the assistant message, tool responses stay in `tool` messages, and the top-level `tools`, `metadata`, and `usage` fields are preserved on every row.",
             "",
             "## Generation metadata",
             "",
             f"- Model: `{model}`" if model else "- Model: not set",
             f"- Reasoning effort: `{reasoning_effort}`",
             f"- Enabled tools: {tool_line}",
+            "- Row metadata fields: `prompt_id`, `run_id`, `session_id`, `turns`, `completed`, `tool_calls_count`, `error`, `retryable`.",
+            "- Usage fields: `prompt_tokens`, `completion_tokens`, `reasoning_tokens`, `total_tokens`, `cost`.",
         ]
     ) + "\n"
 
@@ -199,7 +525,8 @@ class AgenticDatasetGenerator:
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration from YAML file."""
         with open(config_path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
+            raw_config = yaml.safe_load(f) or {}
+        return normalize_config(raw_config)
 
     def _setup_logging(self) -> logging.Logger:
         """Setup logging configuration."""
@@ -228,6 +555,8 @@ class AgenticDatasetGenerator:
     def _get_api_key(self) -> str:
         """Get API key from config or environment."""
         api_config = self.config["api"]
+        provider = str(api_config.get("provider") or "").strip().lower()
+        base_url = api_config.get("base_url")
 
         if "api_key" in api_config and api_config["api_key"]:
             api_key = api_config["api_key"]
@@ -250,6 +579,10 @@ class AgenticDatasetGenerator:
                 from dotenv import dotenv_values
 
                 api_key = dotenv_values(old_env).get(env_var)
+
+        if not api_key and provider == "openai" and _is_local_base_url(base_url):
+            self.logger.info("No API key configured for local OpenAI-compatible endpoint; continuing without auth")
+            return ""
 
         if not api_key:
             raise ValueError(
@@ -346,14 +679,12 @@ class AgenticDatasetGenerator:
                 valid_entries += 1
 
         if removed_entries or rewritten_entries:
-            temp_file.replace(self.output_file)
+            os.replace(temp_file, self.output_file)
             if removed_entries:
-                self.logger.warning(
-                    "Removed %s contaminated entries and rewrote %s rows in %s; retained %s clean completed entries",
-                    removed_entries,
-                    rewritten_entries,
-                    self.output_file,
+                self.logger.info(
+                    "Sanitized existing dataset by keeping %s valid rows and removing %s invalid rows",
                     valid_entries,
+                    removed_entries,
                 )
             else:
                 self.logger.info(
@@ -365,6 +696,19 @@ class AgenticDatasetGenerator:
 
         if temp_file.exists():
             temp_file.unlink()
+
+    def _validate_runtime_prerequisites(self) -> None:
+        probe_workspace = self.base_workspace_dir / ".runtime_probe"
+        probe_workspace.mkdir(parents=True, exist_ok=True)
+        registry = ToolRegistry(probe_workspace, config=self.config)
+        try:
+            registry.validate_runtime_prerequisites()
+        finally:
+            registry.close()
+            try:
+                probe_workspace.rmdir()
+            except OSError:
+                pass
 
     def _count_output_rows(self) -> int:
         if not self.output_file.exists():
@@ -391,10 +735,12 @@ class AgenticDatasetGenerator:
     def _cleanup_workspace(self, workspace_dir: Path):
         """Remove workspace directory with retry for stubborn files."""
         if not workspace_dir.exists():
+            delete_session_state(workspace_dir)
             return
         for attempt in range(3):
             try:
                 shutil.rmtree(workspace_dir)
+                delete_session_state(workspace_dir)
                 return
             except OSError as e:
                 if attempt < 2:
@@ -410,106 +756,150 @@ class AgenticDatasetGenerator:
                             timeout=30,
                             check=False,
                         )
+                        delete_session_state(workspace_dir)
                     except Exception:
                         self.logger.warning(f"Could not fully clean {workspace_dir}: {e}")
+
+    def _retryable_session_max_attempts(self) -> int:
+        processing_config = self.config.get("processing", {}) or {}
+        try:
+            return max(1, int(processing_config.get("retryable_session_max_attempts", 2)))
+        except (TypeError, ValueError):
+            return 2
+
+    def _session_retry_delay(self, attempt: int) -> float:
+        api_config = self.config.get("api", {}) or {}
+        try:
+            base_delay = max(0.0, float(api_config.get("backoff_base_seconds", 2.0) or 0.0))
+        except (TypeError, ValueError):
+            base_delay = 2.0
+        try:
+            max_delay = max(0.0, float(api_config.get("backoff_max_seconds", 60.0) or 0.0))
+        except (TypeError, ValueError):
+            max_delay = 60.0
+        delay = base_delay * (2 ** max(0, attempt - 1))
+        return min(delay, max_delay) if max_delay > 0 else delay
 
     def _process_prompt(self, prompt: str, index: int) -> Optional[Dict[str, Any]]:
         """Process a single prompt and return formatted entry."""
         prompt_id = self.run_manifest.make_prompt_id(index, prompt)
         session_id = f"session_{index:06d}"
         workspace_dir = self._create_workspace(session_id)
-        session = None
+        preserve_on_error = self.config["workspace"].get("preserve_on_error", True)
+        max_attempts = self._retryable_session_max_attempts()
 
         self.logger.info(f"Processing prompt {index}: {prompt[:80]}...")
-        self.run_manifest.mark_running(prompt_id, index, prompt, workspace_dir)
+        for attempt in range(1, max_attempts + 1):
+            session = None
+            self.run_manifest.mark_running(prompt_id, index, prompt, workspace_dir)
 
-        try:
-            session = create_session_engine(
-                prompt=prompt,
-                workspace_dir=workspace_dir,
-                api_config=self.config["api"],
-                agent_config=self.config["agent"],
-                session_id=session_id,
-                prompt_id=prompt_id,
-                run_id=self.run_id,
-                runtime_config=self.config,
-            )
+            try:
+                session = create_session_engine(
+                    prompt=prompt,
+                    workspace_dir=workspace_dir,
+                    api_config=self.config["api"],
+                    agent_config=self.config["agent"],
+                    session_id=session_id,
+                    prompt_id=prompt_id,
+                    run_id=self.run_id,
+                    runtime_config=self.config,
+                )
 
-            session_data = session.run()
+                session_data = session.run()
 
-            is_error = bool(session_data.get("error"))
-            is_completed = bool(
-                session_data.get("completed") and not session_data.get("error")
-            )
-            status = "completed"
-            if not is_completed and session_data.get("retryable"):
-                status = "retryable_error"
-            elif is_error:
-                status = "fatal_error"
-            elif not is_completed:
-                status = "incomplete"
-            self.run_manifest.mark_result(
-                prompt_id,
-                status=status,
-                completed=is_completed,
-                retryable=bool(session_data.get("retryable")),
-                error=session_data.get("error"),
-                turns=session_data.get("turns"),
-                tool_calls_count=len(session_data.get("tool_calls") or []),
-                usage=session_data.get("usage"),
-                workspace_dir=workspace_dir,
-            )
-            if is_error:
-                self.logger.error(f"Session error: {session_data['error']}")
-                if self.config["workspace"].get("preserve_on_error", True):
+                is_error = bool(session_data.get("error"))
+                is_completed = bool(
+                    session_data.get("completed") and not session_data.get("error")
+                )
+                status = "completed"
+                if not is_completed and session_data.get("retryable"):
+                    status = "retryable_error"
+                elif is_error:
+                    status = "fatal_error"
+                elif not is_completed:
+                    status = "incomplete"
+                self.run_manifest.mark_result(
+                    prompt_id,
+                    status=status,
+                    completed=is_completed,
+                    retryable=bool(session_data.get("retryable")),
+                    error=session_data.get("error"),
+                    turns=session_data.get("turns"),
+                    tool_calls_count=len(session_data.get("tool_calls") or []),
+                    usage=session_data.get("usage"),
+                    workspace_dir=workspace_dir,
+                )
+
+                should_retry = bool(session_data.get("retryable")) and attempt < max_attempts
+                if is_error and should_retry:
+                    delay = self._session_retry_delay(attempt)
+                    self.logger.warning(
+                        "Retryable session error for prompt %s on attempt %s/%s: %s",
+                        index,
+                        attempt,
+                        max_attempts,
+                        session_data["error"],
+                    )
+                    if not preserve_on_error:
+                        self._cleanup_workspace(workspace_dir)
+                        workspace_dir = self._create_workspace(session_id)
+                    if delay > 0:
+                        time.sleep(delay)
+                    continue
+
+                if is_error:
+                    self.logger.error(f"Session error: {session_data['error']}")
+                    if preserve_on_error:
+                        self.logger.info(f"Preserving workspace: {workspace_dir}")
+                    else:
+                        self._cleanup_workspace(workspace_dir)
+
+                formatted_entry = self.formatter.format_session(session_data)
+                formatted_entry["tools"] = self.tool_definitions
+                formatted_entry = {
+                    "prompt": formatted_entry.get("prompt"),
+                    "tools": formatted_entry.get("tools"),
+                    "messages": formatted_entry.get("messages"),
+                    "metadata": formatted_entry.get("metadata"),
+                    "usage": formatted_entry.get("usage"),
+                }
+
+                if not self.formatter.validate_entry(
+                    formatted_entry, require_completion=is_completed
+                ):
+                    self.logger.error("Entry validation failed")
+                    return None
+
+                if self.config["workspace"].get("cleanup", True) and is_completed:
+                    self._cleanup_workspace(workspace_dir)
+                elif not is_error:
+                    self.logger.info(f"Preserving workspace: {workspace_dir}")
+
+                return formatted_entry
+
+            except Exception as e:
+                self.logger.error(f"Error processing prompt: {e}", exc_info=True)
+                self.run_manifest.mark_result(
+                    prompt_id,
+                    status="fatal_error",
+                    completed=False,
+                    retryable=False,
+                    error=str(e),
+                    turns=None,
+                    tool_calls_count=None,
+                    usage=None,
+                    workspace_dir=workspace_dir,
+                )
+                if preserve_on_error:
                     self.logger.info(f"Preserving workspace: {workspace_dir}")
                 else:
                     self._cleanup_workspace(workspace_dir)
-
-            formatted_entry = self.formatter.format_session(session_data)
-            formatted_entry["tools"] = self.tool_definitions
-            formatted_entry = {
-                "prompt": formatted_entry.get("prompt"),
-                "tools": formatted_entry.get("tools"),
-                "messages": formatted_entry.get("messages"),
-                "metadata": formatted_entry.get("metadata"),
-                "usage": formatted_entry.get("usage"),
-            }
-
-            if not self.formatter.validate_entry(
-                formatted_entry, require_completion=is_completed
-            ):
-                self.logger.error("Entry validation failed")
                 return None
+            finally:
+                if session is not None:
+                    session.close()
 
-            if self.config["workspace"].get("cleanup", True) and is_completed:
-                self._cleanup_workspace(workspace_dir)
-            else:
-                self.logger.info(f"Preserving workspace: {workspace_dir}")
-
-            return formatted_entry
-
-        except Exception as e:
-            self.logger.error(f"Error processing prompt: {e}", exc_info=True)
-            self.run_manifest.mark_result(
-                prompt_id,
-                status="fatal_error",
-                completed=False,
-                retryable=False,
-                error=str(e),
-                turns=None,
-                tool_calls_count=None,
-                usage=None,
-                workspace_dir=workspace_dir,
-            )
-            if self.config["workspace"].get("preserve_on_error", True):
-                self.logger.info(f"Preserving workspace: {workspace_dir}")
-            else:
-                self._cleanup_workspace(workspace_dir)
-            return None
-        finally:
-            if session is not None:
-                session.close()
+        return None
 
     def _append_to_dataset(self, entry: Dict[str, Any]):
         """Append entry to dataset file."""
@@ -527,6 +917,8 @@ class AgenticDatasetGenerator:
         if self._is_training_safe_entry(entry):
             self._append_to_dataset(entry)
             self.run_manifest.set_route(prompt_id, "dataset")
+        elif self.formatter.is_dataset_error_entry(entry):
+            self.run_manifest.set_route(prompt_id, "error_dataset")
         else:
             self.run_manifest.set_route(prompt_id, "skipped")
 
@@ -535,6 +927,7 @@ class AgenticDatasetGenerator:
         from tqdm import tqdm
 
         self.logger.info("Starting agentic dataset generation")
+        self._validate_runtime_prerequisites()
 
         prompts = self._load_prompts()
         self.logger.info(f"Loaded {len(prompts)} prompts")

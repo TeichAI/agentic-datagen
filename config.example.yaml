@@ -1,58 +1,35 @@
 # Agentic Dataset Generation Configuration
 
-# API Configuration
-api:
-  provider: "openrouter" # API provider (e.g., "openrouter")
-  base_url: "https://openrouter.ai/api/v1/chat/completions" # API endpoint
-  model: "anthropic/claude-3.5-sonnet" # Model to use for generation
-  api_key: "your-api-key-here" # API key (can also be set via OPENROUTER_API_KEY env var)
-  api_key_env: "OPENROUTER_API_KEY" # Optional: override the env var name
-  reasoning_effort: "medium" # Optional: OpenRouter reasoning effort (e.g., low|medium|high)
-  max_retries: 5 # Retries for retryable transport/provider failures
-  backoff_base_seconds: 2.0 # Exponential backoff base delay
-  backoff_max_seconds: 60.0 # Maximum retry delay
-  timeout: 120 # Request timeout in seconds
-  searxng_url: "http://localhost:your-searxng-port" # Custom SearXNG instance URL
+# Model Configuration
+model:
+  provider: "openrouter"
+  base_url: "https://openrouter.ai/api/v1/chat/completions"
+  name: "openrouter/elephant-alpha"
+  api_key_env: "OPENROUTER_API_KEY"
+  reasoning_effort: "medium"
+  system_prompt: null
+  max_turns: 50
+
+# OpenAI-compatible examples:
+# - OpenAI cloud:
+#   provider: "openai"
+#   name: "gpt-4.1-mini"
+#   api_key_env: "OPENAI_API_KEY"
+# - vLLM / llama.cpp / other local OpenAI-compatible server:
+#   provider: "openai"
+#   base_url: "http://localhost:8000/v1"
+#   name: "Qwen/Qwen2.5-Coder-32B-Instruct"
+#   # Local endpoints can omit api_key/api_key_env
 
 # Prompts Configuration
 prompts:
-  source: "prompts.txt" # Path to prompts file relative to repo root
-  limit: null # Optional: limit number of prompts to process (null/0 = all)
-  shuffle: false # Whether to shuffle prompts before processing
+  source: "prompts.txt"
+  limit: null
+  shuffle: false
 
-# Workspace Configuration
-workspace:
-  base_dir: "sandbox" # Directory for agent workspaces, relative to repo root
-  cleanup: true # Whether to delete workspace after successful processing
-  preserve_on_error: true # Keep workspace if processing fails
-  command_runner:
-    mode: "docker" # Set to "host" to run built-in workspace tools sessions unsandboxed (not recommended due to port conflicts and security risks)
-    tool_scope: "all" # "command" = only run_command, "all" = read/write/edit/list/search + run_command
-    eager_start: false # Start the session container immediately instead of lazily on first tool execution
-    timeout_seconds: 30
-    bootstrap_trigger: "container_start" # "before_first_command" or "container_start"
-    bootstrap_timeout_seconds: 120
-    bootstrap_commands: [] # Example: ["if [ -f package.json ]; then npm install; fi", "if [ -f pyproject.toml ]; then uv sync; fi"]
-    docker_binary: "docker"
-    docker_image: "agentic-datagen-session-runtime:latest" # Build from src/docker/session-runtime.Dockerfile for a fuller Linux dev runtime
-    container_workspace_dir: "/workspace"
-    use_host_user: true # Preserve host file ownership for bind-mounted sandbox files
-    shell: "/bin/sh"
-    shell_args: ["-lc"]
-
-# Agent Configuration
-agent:
-  engine: "native" # "native" = existing OpenRouter-style tool loop, "opencode" = external OpenCode CLI backend
-  max_turns: 50 # Maximum conversation turns per prompt
-  system_prompt: null # Optional: override the default prompt, which uses Context7 for current library/framework docs when available
-  opencode:
-    binary: "opencode" # Path to the OpenCode CLI binary when agent.engine = "opencode"
-    model: null # Optional override for the OpenCode model string (defaults to api.model)
-    agent: null # Optional OpenCode agent name
-    timeout_seconds: 600
-    inline_system_prompt: false # If true, prepend agent.system_prompt to the user prompt because OpenCode CLI run mode has no dedicated system prompt flag
-    extra_args: []
-  tools_enabled:
+# Tool Configuration
+tools:
+  enabled:
     - read_file
     - write_file
     - edit_file
@@ -62,8 +39,8 @@ agent:
     - web_search
     - workspace_snapshot
     - context7:*
-
-tools:
+  web_search:
+    searxng_url: "http://localhost:your-searxng-port"
   custom_python_modules:
     - custom_tools.example_tools
   strict_mcp: false
@@ -76,14 +53,23 @@ tools:
       headers:
         CONTEXT7_API_KEY: "YOUR_API_KEY"
 
+# Workspace Configuration
+workspace:
+  base_dir: "sandbox"
+  cleanup: true
+  preserve_on_error: true
+  command_runner:
+    mode: "docker"
+    tool_scope: "all"
+    docker_image: "agentic-datagen-session-runtime:latest"
+
 # Output Configuration
 output:
-  dataset_file: "datasets/agentic_dataset.jsonl" # Target dataset file relative to repo root
-  error_dataset_file: "datasets/agentic_dataset_errors.jsonl" # Optional: failed sessions only
-  run_manifest_file: "datasets/agentic_dataset.manifest.json" # Per-prompt status, attempts, and routing info
-  append_mode: true # Append to dataset (false = overwrite)
+  dataset_file: "datasets/agentic_dataset.jsonl"
+  run_manifest_file: "datasets/agentic_dataset.manifest.json"
+  append_mode: true
 
 # Processing Configuration
 processing:
-  concurrency: 1 # Number of prompts to process concurrently
-  resume: true # Resume from existing dataset file
+  concurrency: 1
+  resume: true

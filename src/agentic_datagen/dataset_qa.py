@@ -45,7 +45,7 @@ def _parse_tool_content(content: Any) -> Optional[Dict[str, Any]]:
         parsed = json.loads(content)
     except json.JSONDecodeError:
         return None
-    return parsed if isinstance(parsed, dict) else None
+    return parsed
 
 
 def analyze_entry(entry: Dict[str, Any], index: int, formatter: Optional[Formatter] = None) -> Dict[str, Any]:
@@ -65,7 +65,19 @@ def analyze_entry(entry: Dict[str, Any], index: int, formatter: Optional[Formatt
     final_role = final_message.get("role")
     final_content = _safe_text(final_message.get("content"))
     prompt_text = _safe_text(entry.get("prompt"))
-    all_text = "\n".join(_safe_text(msg.get("content")) for msg in messages if isinstance(msg, dict))
+    all_text = "\n".join(
+        "\n".join(
+            part
+            for part in [
+                _safe_text(msg.get("content")),
+                _safe_text(msg.get("reasoning_content")),
+                _safe_text(msg.get("thinking")),
+            ]
+            if part
+        )
+        for msg in messages
+        if isinstance(msg, dict)
+    )
     all_text_lower = all_text.lower()
 
     errors: List[str] = []
@@ -84,6 +96,8 @@ def analyze_entry(entry: Dict[str, Any], index: int, formatter: Optional[Formatt
         errors.append("invalid_structure")
     if metadata_error_present:
         errors.append("metadata_error")
+    if formatter.is_max_turns_exceeded_entry(entry):
+        errors.append("max_turns_exceeded")
     if not ended_with_assistant:
         errors.append("last_message_not_assistant")
     if not completed:
@@ -104,11 +118,16 @@ def analyze_entry(entry: Dict[str, Any], index: int, formatter: Optional[Formatt
     failed_tool_calls = 0
     unparsable_tool_messages = 0
     for msg in tool_messages:
-        parsed = _parse_tool_content(msg.get("content"))
+        content = msg.get("content")
+        parsed = _parse_tool_content(content)
         if parsed is None:
+            if isinstance(content, str) and content.strip():
+                continue
             unparsable_tool_messages += 1
             continue
-        if parsed.get("success") is False or parsed.get("isError") is True:
+        if isinstance(parsed, dict) and (
+            parsed.get("success") is False or parsed.get("isError") is True
+        ):
             failed_tool_calls += 1
 
     if failed_tool_calls:
@@ -122,7 +141,16 @@ def analyze_entry(entry: Dict[str, Any], index: int, formatter: Optional[Formatt
     if isinstance(tool_calls_count, int) and tool_calls_count != len(tool_messages):
         warnings.append("tool_call_count_mismatch")
 
-    has_reasoning_tags = "<think>" in all_text or "</think>" in all_text
+    has_reasoning_tags = (
+        "<think>" in all_text
+        or "</think>" in all_text
+        or any(
+            isinstance(msg, dict)
+            and isinstance(msg.get("reasoning_content"), str)
+            and msg.get("reasoning_content").strip()
+            for msg in assistant_messages
+        )
+    )
     mentions_localhost = "localhost" in all_text_lower or "127.0.0.1" in all_text_lower
     mentions_port_conflict = "already in use" in all_text_lower
 

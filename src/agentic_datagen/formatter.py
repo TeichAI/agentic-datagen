@@ -2,6 +2,8 @@ import json
 import re
 from typing import Any, Dict, List
 
+from .utils import prompt_requires_artifact
+
 
 class Formatter:
     """Format agentic sessions to proper format."""
@@ -10,12 +12,21 @@ class Formatter:
 
     @classmethod
     def split_content_and_thinking(
-        cls, content: Any, thinking: Any = None
+        cls,
+        content: Any,
+        reasoning_content: Any = None,
+        thinking: Any = None,
     ) -> tuple[str, str | None]:
         normalized_content = content if isinstance(content, str) else ""
-        normalized_thinking = thinking.strip() if isinstance(thinking, str) and thinking.strip() else None
-        if normalized_thinking is not None:
-            return normalized_content, normalized_thinking
+        normalized_reasoning = (
+            reasoning_content.strip()
+            if isinstance(reasoning_content, str) and reasoning_content.strip()
+            else None
+        )
+        if normalized_reasoning is None and isinstance(thinking, str) and thinking.strip():
+            normalized_reasoning = thinking.strip()
+        if normalized_reasoning is not None:
+            return normalized_content, normalized_reasoning
         if not normalized_content:
             return "", None
         match = cls.THINK_BLOCK_RE.match(normalized_content)
@@ -67,12 +78,14 @@ class Formatter:
             if not isinstance(msg, dict):
                 continue
             role = msg.get("role")
-            content, thinking = cls.split_content_and_thinking(
-                msg.get("content", ""), msg.get("thinking")
+            content, reasoning_content = cls.split_content_and_thinking(
+                msg.get("content", ""),
+                msg.get("reasoning_content"),
+                msg.get("thinking"),
             )
             normalized_msg: Dict[str, Any] = {"role": role, "content": content}
-            if thinking is not None:
-                normalized_msg["thinking"] = thinking
+            if reasoning_content is not None:
+                normalized_msg["reasoning_content"] = reasoning_content
             if role == "assistant" and "tool_calls" in msg:
                 normalized_msg["tool_calls"] = cls.normalize_tool_calls(msg.get("tool_calls"))
             if role == "tool":
@@ -95,22 +108,7 @@ class Formatter:
 
     @staticmethod
     def _prompt_requires_artifact(prompt: str) -> bool:
-        lowered = prompt.lower()
-        keywords = [
-            "build",
-            "create",
-            "make",
-            "develop",
-            "website",
-            "landing page",
-            "dashboard",
-            "portfolio",
-            "site",
-            "app",
-            "tool",
-            "page",
-        ]
-        return any(keyword in lowered for keyword in keywords)
+        return prompt_requires_artifact(prompt)
 
     @staticmethod
     def _tool_names(messages: List[Dict[str, Any]]) -> List[str]:
@@ -140,6 +138,8 @@ class Formatter:
             return False
         if not cls._prompt_requires_artifact(prompt):
             return False
+        if metadata.get("workspace_has_artifacts") is False:
+            return True
 
         turns = int(metadata.get("turns") or 0)
         tool_calls_count = int(metadata.get("tool_calls_count") or 0)
@@ -160,6 +160,22 @@ class Formatter:
         return cls.validate_entry(entry, require_completion=True) and not cls.is_suspiciously_shallow_completion(entry)
 
     @staticmethod
+    def _metadata_error_text(entry: Dict[str, Any]) -> str:
+        metadata = entry.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            return ""
+        error = metadata.get("error")
+        return error.strip().lower() if isinstance(error, str) else ""
+
+    @classmethod
+    def is_max_turns_exceeded_entry(cls, entry: Dict[str, Any]) -> bool:
+        return "max turns exceeded" in cls._metadata_error_text(entry)
+
+    @classmethod
+    def is_dataset_error_entry(cls, entry: Dict[str, Any]) -> bool:
+        return cls.is_max_turns_exceeded_entry(entry)
+
+    @staticmethod
     def format_session(session_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Format a session into proper structure.
@@ -176,14 +192,16 @@ class Formatter:
 
         for msg in conversation:
             role = msg.get("role")
-            content, thinking = Formatter.split_content_and_thinking(
-                msg.get("content", ""), msg.get("thinking")
+            content, reasoning_content = Formatter.split_content_and_thinking(
+                msg.get("content", ""),
+                msg.get("reasoning_content"),
+                msg.get("thinking"),
             )
 
             formatted_msg = {"role": role, "content": content}
 
-            if thinking is not None:
-                formatted_msg["thinking"] = thinking
+            if reasoning_content is not None:
+                formatted_msg["reasoning_content"] = reasoning_content
 
             if role == "assistant" and "tool_calls" in msg:
                 formatted_msg["tool_calls"] = Formatter.normalize_tool_calls(
@@ -208,6 +226,9 @@ class Formatter:
                 "tool_calls_count": len(tool_calls),
                 "error": session_data.get("error"),
                 "retryable": session_data.get("retryable", False),
+                "workspace_file_count": session_data.get("workspace_file_count"),
+                "workspace_has_artifacts": session_data.get("workspace_has_artifacts"),
+                "successful_mutating_tool_calls": session_data.get("successful_mutating_tool_calls"),
             },
             "usage": usage,
         }

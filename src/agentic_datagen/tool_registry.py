@@ -164,9 +164,7 @@ class ToolRegistry:
         self._register_builtin_tools()
         self._register_custom_python_tools()
         self._register_mcp_tools()
-        if self._command_runner_mode() == "docker" and (
-            self._run_workspace_tools_in_docker() or self._docker_eager_start()
-        ):
+        if self._command_runner_mode() == "docker" and self._docker_eager_start():
             self._ensure_docker_container()
 
     def register_tool(
@@ -292,12 +290,12 @@ class ToolRegistry:
             return 30.0
 
     def _command_runner_mode(self) -> str:
-        mode = self._command_runner_config().get("mode", "host")
-        return str(mode).strip().lower() or "host"
+        mode = self._command_runner_config().get("mode", "docker")
+        return str(mode).strip().lower() or "docker"
 
     def _command_runner_tool_scope(self) -> str:
-        scope = self._command_runner_config().get("tool_scope", "command")
-        normalized = str(scope).strip().lower() or "command"
+        scope = self._command_runner_config().get("tool_scope", "all")
+        normalized = str(scope).strip().lower() or "all"
         if normalized in {"all", "full", "workspace"}:
             return "all"
         return "command"
@@ -352,9 +350,7 @@ class ToolRegistry:
     def _docker_image(self) -> str:
         image = self._command_runner_config().get("docker_image") or self._command_runner_config().get("image")
         if not image:
-            raise RuntimeError(
-                "Docker command runner enabled but no image is configured at workspace.command_runner.docker_image"
-            )
+            image = "agentic-datagen-session-runtime:latest"
         return str(image)
 
     def _docker_container_name_for_workspace(self) -> str:
@@ -434,6 +430,38 @@ class ToolRegistry:
         )
         return result.returncode == 0 and result.stdout.strip() == "true"
 
+    def _docker_start_error_message(self, result: subprocess.CompletedProcess[str]) -> str:
+        output = (result.stderr or result.stdout or "docker run failed").strip()
+        image = self._docker_image()
+        lowered = output.lower()
+        missing_image_tokens = [
+            "unable to find image",
+            "pull access denied",
+            "repository does not exist",
+            "manifest unknown",
+            "no such image",
+        ]
+        if any(token in lowered for token in missing_image_tokens):
+            return (
+                f"Docker image '{image}' is not available. "
+                "Build or pull it before running sessions. "
+                "For the bundled default runtime, run "
+                "`docker build -t agentic-datagen-session-runtime:latest -f src/docker/session-runtime.Dockerfile .`.\n"
+                f"{output}"
+            )
+        return output
+
+    def validate_runtime_prerequisites(self) -> None:
+        if self._command_runner_mode() != "docker":
+            return
+        image = self._docker_image()
+        result = self._run_subprocess(
+            [self._docker_binary(), "image", "inspect", image],
+            timeout=10,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(self._docker_start_error_message(result))
+
     def _ensure_docker_container(self) -> None:
         if self._docker_container_is_running():
             return
@@ -462,9 +490,7 @@ class ToolRegistry:
             timeout=self._command_timeout_seconds(),
         )
         if result.returncode != 0:
-            raise RuntimeError(
-                (result.stderr or result.stdout or "docker run failed").strip()
-            )
+            raise RuntimeError(self._docker_start_error_message(result))
         self._docker_container_running = True
         self._docker_bootstrap_completed = False
         self._maybe_run_docker_bootstrap("container_start")
@@ -946,7 +972,7 @@ class ToolRegistry:
         self._ensure_in_workspace(full_path)
         items = []
         for item in sorted(full_path.iterdir()):
-            rel_path = item.relative_to(self.workspace_dir)
+            rel_path = item.relative_to(self.workspace_dir).as_posix()
             if item.is_dir():
                 items.append(f"{rel_path}/")
             else:
@@ -1028,9 +1054,11 @@ class ToolRegistry:
                 timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired:
-            return f"Error: Command timed out after {int(self._command_timeout_seconds())} seconds"
+            raise RuntimeError(
+                f"Command timed out after {int(timeout_seconds)} seconds"
+            )
         except Exception as exc:
-            return f"Error executing command: {str(exc)}"
+            raise RuntimeError(f"Error executing command: {str(exc)}") from exc
         output = result.stdout
         if result.stderr:
             output += f"\nSTDERR:\n{result.stderr}"

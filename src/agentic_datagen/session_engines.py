@@ -10,6 +10,12 @@ from typing import Any, Dict, List, Optional
 
 from .agent_session import AgentSession as NativeAgentSession
 from .tool_registry import ToolRegistry
+from .utils import (
+    apply_workspace_completion_guardrails,
+    get_session_state_path,
+    load_guarded_session_state,
+    migrate_legacy_session_state,
+)
 
 
 OPENCODE_TOOL_SPECS: dict[str, dict[str, Any]] = {
@@ -207,24 +213,26 @@ class BaseSessionEngine:
             "api": api_config,
             "agent": agent_config,
         }
-        self.state_file = self.workspace_dir / "session_state.json"
+        self.state_file = get_session_state_path(self.workspace_dir)
+        migrate_legacy_session_state(self.workspace_dir, self.state_file)
 
     def _load_session_state(self) -> Optional[Dict[str, Any]]:
-        if not self.state_file.exists():
-            return None
-        try:
-            with self.state_file.open("r", encoding="utf-8") as f:
-                state = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            return None
-        if state.get("prompt") != self.prompt:
-            return None
-        return state
+        return load_guarded_session_state(
+            self.state_file,
+            prompt=self.prompt,
+            workspace_dir=self.workspace_dir,
+        )
 
-    def _save_session_state(self, session_data: Dict[str, Any]) -> None:
-        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+    def _save_session_state(self, session_data: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = apply_workspace_completion_guardrails(
+            session_data,
+            prompt=self.prompt,
+            workspace_dir=self.workspace_dir,
+        )
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
         with self.state_file.open("w", encoding="utf-8") as f:
-            json.dump(session_data, f, ensure_ascii=False)
+            json.dump(normalized, f, ensure_ascii=False)
+        return normalized
 
     def _build_session_payload(
         self,
@@ -626,7 +634,7 @@ class OpenCodeSessionEngine(BaseSessionEngine):
                 }
                 thinking = "\n".join(text for text in pre_reasoning if text).strip()
                 if thinking:
-                    assistant_message["thinking"] = thinking
+                    assistant_message["reasoning_content"] = thinking
                 conversation.append(assistant_message)
                 conversation.extend(tool_messages)
                 final_content = "\n".join(text for text in post_text if text).strip()
@@ -637,7 +645,7 @@ class OpenCodeSessionEngine(BaseSessionEngine):
                         "content": final_content,
                     }
                     if final_thinking:
-                        final_message["thinking"] = final_thinking
+                        final_message["reasoning_content"] = final_thinking
                     conversation.append(final_message)
             else:
                 assistant_message = {
@@ -646,7 +654,7 @@ class OpenCodeSessionEngine(BaseSessionEngine):
                 }
                 thinking = "\n".join(text for text in pre_reasoning + post_reasoning if text).strip()
                 if thinking:
-                    assistant_message["thinking"] = thinking
+                    assistant_message["reasoning_content"] = thinking
                 conversation.append(assistant_message)
             if info.get("error") and session_error is None:
                 session_error = info.get("error")
@@ -740,7 +748,7 @@ class OpenCodeSessionEngine(BaseSessionEngine):
             events=events,
             inline_system_prompt=self._inline_system_prompt(),
         )
-        self._save_session_state(session_data)
+        session_data = self._save_session_state(session_data)
         return session_data
 
     def close(self) -> None:
@@ -781,10 +789,6 @@ def get_engine_tool_definitions(
     if engine_name == "opencode":
         return OpenCodeSessionEngine.tool_definitions(enabled_tools)
     config_copy = copy.deepcopy(runtime_config)
-    workspace_config = config_copy.setdefault("workspace", {})
-    command_runner = workspace_config.setdefault("command_runner", {})
-    command_runner["mode"] = "host"
-    command_runner["eager_start"] = False
     registry = ToolRegistry(Path("."), config=config_copy)
     try:
         return registry.get_tool_definitions(enabled_tools)

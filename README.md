@@ -77,23 +77,23 @@ The tool uses a simple YAML configuration file. See `config.example.yaml` for th
 ### Minimal Configuration
 
 ```yaml
-api:
-  model: "anthropic/claude-3.5-sonnet"
-  api_key: "your-api-key"
-  searxng_url: "http://localhost:your-searxng-port"
+model:
+  provider: "openrouter"
+  name: "openrouter/elephant-alpha"
+  api_key_env: "OPENROUTER_API_KEY"
+  reasoning_effort: "medium"
 
 prompts:
   source: "prompts.txt" # .txt, .jsonl, or .json
 
-workspace:
-  base_dir: "sandbox"
-
-agent:
-  tools_enabled:
+tools:
+  enabled:
     - read_file
     - write_file
     - run_command
     - web_search
+  web_search:
+    searxng_url: "http://localhost:your-searxng-port"
 
 output:
   dataset_file: "datasets/agentic_dataset.jsonl"
@@ -101,19 +101,44 @@ output:
   append_mode: true
 ```
 
-### API Options
+### Model Options
 
 ```yaml
-api:
-  provider: "openrouter" # Provider name (optional)
-  base_url: "https://openrouter.ai/api/v1/chat/completions" # Override API endpoint
+model:
+  provider: "openrouter" # "openrouter" or "openai" are the main OpenAI-compatible options
+  base_url: "https://openrouter.ai/api/v1/chat/completions" # Full chat-completions URL, or an OpenAI-compatible root /v1 URL
   api_key_env: "OPENROUTER_API_KEY" # Read API key from env instead of api_key
-  reasoning_effort: "medium" # Optional: OpenRouter reasoning effort (low|medium|high)
+  name: "openrouter/elephant-alpha" # Model identifier
+  reasoning_effort: "medium" # OpenRouter uses reasoning: { effort: ... }; OpenAI-compatible providers use reasoning_effort
+  system_prompt: null # Optional system prompt override
+  max_turns: 50 # Maximum turns per prompt
   max_retries: 5 # Retries for retryable transport/provider failures
   backoff_base_seconds: 2.0 # Exponential backoff base delay
   backoff_max_seconds: 60.0 # Maximum retry delay
   timeout: 120 # Request timeout in seconds
 ```
+
+The public config is normalized internally into the generator's runtime config. That keeps the user-facing YAML small while preserving the richer internal defaults needed by the runtime.
+
+Common provider setups:
+
+```yaml
+# OpenAI cloud
+model:
+  provider: "openai"
+  name: "gpt-4.1-mini"
+  api_key_env: "OPENAI_API_KEY"
+
+# vLLM / llama.cpp / LM Studio / other OpenAI-compatible server
+model:
+  provider: "openai"
+  base_url: "http://localhost:8000/v1"
+  name: "Qwen/Qwen2.5-Coder-32B-Instruct"
+```
+
+- If you provide `base_url: "http://localhost:8000/v1"`, the runtime automatically expands it to `.../chat/completions`.
+- For `provider: "openai"`, the default API key env var becomes `OPENAI_API_KEY`.
+- Local OpenAI-compatible endpoints on `localhost` / `127.0.0.1` can be used without an API key.
 
 ### Prompt Sources
 
@@ -138,9 +163,34 @@ output:
 - `error_dataset_file` is no longer part of the recommended workflow.
 - The main dataset excludes suspiciously shallow completed build/create trajectories, such as very short sessions with only exploratory tool usage and no file-mutating work.
 
-### Workspace Command Runner
+### Tool Configuration
 
-Built-in workspace tools can execute either on the host or inside a per-session Docker container.
+```yaml
+tools:
+  enabled:
+    - read_file
+    - write_file
+    - edit_file
+    - list_directory
+    - search_code
+    - run_command
+    - web_search
+    - workspace_snapshot
+    - context7:*
+  web_search:
+    searxng_url: "http://localhost:your-searxng-port"
+  custom_python_modules:
+    - custom_tools.example_tools
+  strict_mcp: false
+```
+
+The runtime still supports advanced internals like custom Python tools, MCP servers, and workspace runner overrides, but those do not need to be configured just to get a run working.
+
+By default, workspace file tools and `run_command` execute inside a per-session Docker container for better isolation from host ports, dependencies, and local machine state. Use host mode only as an explicit opt-out when you understand the tradeoffs.
+
+### Advanced: Workspace Command Runner
+
+Built-in workspace tools can execute either on the host or inside a per-session Docker container. Docker with `tool_scope: "all"` is the default path.
 
 ```yaml
 workspace:
@@ -164,6 +214,7 @@ workspace:
 
 - Use `tool_scope: "command"` to isolate only `run_command`.
 - Use `tool_scope: "all"` to route `read_file`, `write_file`, `edit_file`, `list_directory`, `search_code`, and `run_command` through the session container.
+- If you really need host execution, set `workspace.command_runner.mode: "host"` explicitly.
 - Use `eager_start: true` if you want each active session to create its container immediately instead of waiting until the first tool call.
 - Use `bootstrap_commands` to run one-time per-session setup inside the workspace container.
 - Use `bootstrap_trigger: "before_first_command"` when the agent is expected to create project files first and only then install dependencies.
@@ -190,7 +241,7 @@ The included runtime image preinstalls:
 
 ### Agent Prompting
 
-If `agent.system_prompt` is omitted, the generator uses a short default prompt tuned for code-editing trajectories:
+If `model.system_prompt` is omitted, the generator uses a short default prompt tuned for code-editing trajectories:
 
 ```text
 You are a coding agent. Use tools deliberately, inspect before editing, and finish the user's request with working files inside the workspace. When Context7 documentation tools are available and you are working with libraries or frameworks, use Context7 to fetch the latest relevant docs before making library-specific changes.
@@ -292,7 +343,7 @@ The runtime now supports three tool sources:
    - `TOOLS`: a list of tool spec dictionaries, or
    - `register_tools(registry)`: a function that returns tool specs or registers them directly.
 3. Add the module path to `tools.custom_python_modules`.
-4. Add the tool name to `agent.tools_enabled`.
+4. Add the tool name to `tools.enabled`.
 
 Each tool spec must contain:
 
@@ -356,9 +407,7 @@ tools:
       tool_name_prefix: "context7"
       headers:
         CONTEXT7_API_KEY: "YOUR_API_KEY"
-
-agent:
-  tools_enabled:
+  enabled:
     - context7:*
 ```
 
@@ -457,7 +506,7 @@ This tool is designed to be extensible:
 
 If the LLM provider returns a context length error, the session is marked `fatal_error`. This happens when the model generates very large outputs without completing. Consider:
 
-- Setting a lower `agent.max_turns` limit in config
+- Setting a lower `model.max_turns` limit in config
 - Using a model with larger context window
 - Breaking complex prompts into smaller tasks
 

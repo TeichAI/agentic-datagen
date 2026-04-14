@@ -3,11 +3,18 @@ import random
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .tools import ToolRegistry
+from .utils import (
+    apply_workspace_completion_guardrails,
+    get_session_state_path,
+    load_guarded_session_state,
+    migrate_legacy_session_state,
+)
 
 
 class AgentSession:
@@ -39,7 +46,8 @@ class AgentSession:
         self.tool_registry = ToolRegistry(workspace_dir, config=self.runtime_config)
         self.conversation_history: List[Dict[str, Any]] = []
         self.tool_calls_log: List[Dict[str, Any]] = []
-        self.state_file = self.workspace_dir / "session_state.json"
+        self.state_file = get_session_state_path(self.workspace_dir)
+        migrate_legacy_session_state(self.workspace_dir, self.state_file)
 
         self.http_session = self._create_http_session()
 
@@ -58,24 +66,22 @@ class AgentSession:
         return session
 
     def _load_session_state(self) -> Optional[Dict[str, Any]]:
-        if not self.state_file.exists():
-            return None
+        return load_guarded_session_state(
+            self.state_file,
+            prompt=self.prompt,
+            workspace_dir=self.workspace_dir,
+        )
 
-        try:
-            with self.state_file.open("r", encoding="utf-8") as f:
-                state = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            return None
-
-        if state.get("prompt") != self.prompt:
-            return None
-
-        return state
-
-    def _save_session_state(self, session_data: Dict[str, Any]) -> None:
-        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+    def _save_session_state(self, session_data: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = apply_workspace_completion_guardrails(
+            session_data,
+            prompt=self.prompt,
+            workspace_dir=self.workspace_dir,
+        )
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
         with self.state_file.open("w", encoding="utf-8") as f:
-            json.dump(session_data, f, ensure_ascii=False)
+            json.dump(normalized, f, ensure_ascii=False)
+        return normalized
 
     def _build_session_payload(
         self,
@@ -83,6 +89,7 @@ class AgentSession:
         messages: List[Dict[str, Any]],
         total_prompt_tokens: int,
         total_completion_tokens: int,
+        total_reasoning_tokens: int,
         total_cost: float,
         final_response: Optional[str],
         completed: bool,
@@ -104,10 +111,35 @@ class AgentSession:
             "usage": {
                 "prompt_tokens": total_prompt_tokens,
                 "completion_tokens": total_completion_tokens,
-                "total_tokens": total_prompt_tokens + total_completion_tokens,
+                "reasoning_tokens": total_reasoning_tokens,
+                "total_tokens": total_prompt_tokens + total_completion_tokens + total_reasoning_tokens,
                 "cost": total_cost,
             },
         }
+
+    @staticmethod
+    def _tool_result_payload(tool_result: Any) -> Any:
+        if not isinstance(tool_result, dict):
+            return tool_result
+        if tool_result.get("success") is False:
+            payload: Dict[str, Any] = {"success": False}
+            if tool_result.get("error") is not None:
+                payload["error"] = tool_result.get("error")
+            if tool_result.get("result") is not None:
+                payload["result"] = tool_result.get("result")
+            return payload
+        if "result" in tool_result:
+            return tool_result.get("result")
+        return tool_result
+
+    @classmethod
+    def _tool_result_content(cls, tool_result: Any) -> str:
+        payload = cls._tool_result_payload(tool_result)
+        if isinstance(payload, str):
+            return payload
+        if payload is None:
+            return ""
+        return json.dumps(payload, ensure_ascii=False)
 
     def _is_retryable_error(self, message: str) -> bool:
         lowered = message.lower()
@@ -184,6 +216,7 @@ class AgentSession:
             final_response = state.get("final_response")
             total_prompt_tokens = int(usage.get("prompt_tokens") or 0)
             total_completion_tokens = int(usage.get("completion_tokens") or 0)
+            total_reasoning_tokens = int(usage.get("reasoning_tokens") or 0)
             total_cost = float(usage.get("cost") or 0.0)
         else:
             messages = [
@@ -194,6 +227,7 @@ class AgentSession:
             final_response = None
             total_prompt_tokens = 0
             total_completion_tokens = 0
+            total_reasoning_tokens = 0
             total_cost = 0.0
             self._save_session_state(
                 self._build_session_payload(
@@ -201,6 +235,7 @@ class AgentSession:
                     messages=messages,
                     total_prompt_tokens=total_prompt_tokens,
                     total_completion_tokens=total_completion_tokens,
+                    total_reasoning_tokens=total_reasoning_tokens,
                     total_cost=total_cost,
                     final_response=final_response,
                     completed=False,
@@ -213,11 +248,12 @@ class AgentSession:
             try:
                 response = self._call_llm(messages, enabled_tools)
 
-                prompt_tokens, completion_tokens, turn_cost = self._extract_usage(
+                prompt_tokens, completion_tokens, reasoning_tokens, turn_cost = self._extract_usage(
                     response
                 )
                 total_prompt_tokens += prompt_tokens
                 total_completion_tokens += completion_tokens
+                total_reasoning_tokens += reasoning_tokens
                 total_cost += turn_cost
 
             except Exception as e:
@@ -226,13 +262,14 @@ class AgentSession:
                     messages=messages,
                     total_prompt_tokens=total_prompt_tokens,
                     total_completion_tokens=total_completion_tokens,
+                    total_reasoning_tokens=total_reasoning_tokens,
                     total_cost=total_cost,
                     final_response=None,
                     completed=False,
                     error=f"LLM call failed: {str(e)}",
                     retryable=self._is_retryable_error(str(e)),
                 )
-                self._save_session_state(session_data)
+                session_data = self._save_session_state(session_data)
                 return session_data
 
             assistant_message = response.get("choices", [{}])[0].get("message", {})
@@ -243,13 +280,14 @@ class AgentSession:
                     messages=messages,
                     total_prompt_tokens=total_prompt_tokens,
                     total_completion_tokens=total_completion_tokens,
+                    total_reasoning_tokens=total_reasoning_tokens,
                     total_cost=total_cost,
                     final_response=None,
                     completed=False,
                     error="LLM call failed: empty response message",
                     retryable=True,
                 )
-                self._save_session_state(session_data)
+                session_data = self._save_session_state(session_data)
                 return session_data
 
             # Extract reasoning/thought if present (Google Gemini / OpenRouter format)
@@ -279,7 +317,7 @@ class AgentSession:
                 "content": assistant_message.get("content") or "",
             }
             if isinstance(reasoning_content, str) and reasoning_content.strip():
-                clean_message["thinking"] = reasoning_content.strip()
+                clean_message["reasoning_content"] = reasoning_content.strip()
             if "tool_calls" in assistant_message:
                 clean_message["tool_calls"] = assistant_message["tool_calls"]
 
@@ -295,13 +333,14 @@ class AgentSession:
                     messages=messages,
                     total_prompt_tokens=total_prompt_tokens,
                     total_completion_tokens=total_completion_tokens,
+                    total_reasoning_tokens=total_reasoning_tokens,
                     total_cost=total_cost,
                     final_response=final_response,
                     completed=completed,
                     error=None if completed else "LLM call failed: empty final response",
                     retryable=not completed,
                 )
-                self._save_session_state(session_data)
+                session_data = self._save_session_state(session_data)
                 return session_data
 
             for tool_call in tool_calls:
@@ -325,7 +364,7 @@ class AgentSession:
                     }
                 )
 
-                result_content = json.dumps(tool_result)
+                result_content = self._tool_result_content(tool_result)
                 messages.append(
                     {
                         "role": "tool",
@@ -341,6 +380,7 @@ class AgentSession:
                     messages=messages,
                     total_prompt_tokens=total_prompt_tokens,
                     total_completion_tokens=total_completion_tokens,
+                    total_reasoning_tokens=total_reasoning_tokens,
                     total_cost=total_cost,
                     final_response=final_response,
                     completed=False,
@@ -352,13 +392,14 @@ class AgentSession:
             messages=messages,
             total_prompt_tokens=total_prompt_tokens,
             total_completion_tokens=total_completion_tokens,
+            total_reasoning_tokens=total_reasoning_tokens,
             total_cost=total_cost,
             final_response=final_response,
             completed=False,
             error="LLM call failed: max turns exceeded",
             retryable=True,
         )
-        self._save_session_state(session_data)
+        session_data = self._save_session_state(session_data)
         return session_data
 
     def _call_llm(
@@ -370,19 +411,39 @@ class AgentSession:
         model = self.api_config.get("model")
         timeout = self.api_config.get("timeout", 120)
         reasoning_effort = self.api_config.get("reasoning_effort")
+        provider = str(self.api_config.get("provider") or "").strip().lower()
 
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if isinstance(api_key, str) and api_key.strip():
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        request_messages: List[Dict[str, Any]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            sanitized_message: Dict[str, Any] = {
+                "role": message.get("role"),
+                "content": message.get("content") or "",
+            }
+            if "tool_calls" in message:
+                sanitized_message["tool_calls"] = message["tool_calls"]
+            if message.get("role") == "tool":
+                if message.get("tool_call_id") is not None:
+                    sanitized_message["tool_call_id"] = message.get("tool_call_id")
+                if message.get("name") is not None:
+                    sanitized_message["name"] = message.get("name")
+            request_messages.append(sanitized_message)
 
         body = {
             "model": model,
-            "messages": messages,
+            "messages": request_messages,
         }
 
         if reasoning_effort:
-            body["reasoning"] = {"effort": reasoning_effort}
+            if provider == "openrouter":
+                body["reasoning"] = {"effort": reasoning_effort}
+            elif provider == "openai":
+                body["reasoning_effort"] = reasoning_effort
 
         if enabled_tools:
             tool_definitions = self.tool_registry.get_tool_definitions(enabled_tools)
@@ -441,12 +502,16 @@ class AgentSession:
 
         raise RuntimeError(last_error or "unknown LLM API failure")
 
-    def _extract_usage(self, response: Dict[str, Any]) -> tuple[int, int, float]:
+    def _extract_usage(self, response: Dict[str, Any]) -> tuple[int, int, int, float]:
         usage = response.get("usage") or {}
         prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
         completion_tokens = (
             usage.get("completion_tokens") or usage.get("output_tokens") or 0
         )
+        reasoning_tokens = usage.get("reasoning_tokens") or 0
+        output_token_details = usage.get("output_tokens_details") or {}
+        if reasoning_tokens == 0 and isinstance(output_token_details, dict):
+            reasoning_tokens = output_token_details.get("reasoning_tokens") or 0
 
         cost_candidates = (
             response.get("cost"),
@@ -469,6 +534,7 @@ class AgentSession:
                     completion_tokens = completion_tokens or parsed.get(
                         "completion_tokens", 0
                     )
+                    reasoning_tokens = reasoning_tokens or parsed.get("reasoning_tokens", 0)
                     if turn_cost == 0.0:
                         turn_cost = parsed.get("cost", 0.0) or parsed.get(
                             "total_cost", 0.0
@@ -483,7 +549,12 @@ class AgentSession:
                 except ValueError:
                     pass
 
-        return int(prompt_tokens), int(completion_tokens), float(turn_cost)
+        return (
+            int(prompt_tokens),
+            int(completion_tokens),
+            int(reasoning_tokens),
+            float(turn_cost),
+        )
 
     def close(self):
         """Clean up resources."""
